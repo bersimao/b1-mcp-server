@@ -13,16 +13,16 @@
 // ============================================================================
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { loadConfig, Config } from '../config/settings.js';
-import { AuditLogger } from '../logging/auditLogger.js';
-import { DbAdapter, DirectDbModule } from '../db/adapter.js';
-import { ProcedureInspectionCache } from '../inspection/procedureCache.js';
-import { RateLimiter } from '../rateLimit/rateLimiter.js';
-import { registerQueryTool } from '../tools/executeQuery.js';
-import { registerUpdateTool } from '../tools/executeUpdate.js';
-import { registerInsertTool } from '../tools/executeInsert.js';
-import { registerProcedureTool } from '../tools/executeProcedure.js';
-import { registerSchemaTool } from '../tools/schemaIntrospection.js';
+import { loadConfig, Config } from './config/settings.js';
+import { AuditLogger } from './logging/auditLogger.js';
+import { DbAdapter, DirectDbModule } from './db/adapter.js';
+import { ProcedureInspectionCache } from './inspection/procedureCache.js';
+import { RateLimiter } from './rateLimit/rateLimiter.js';
+import { registerQueryTool } from './tools/executeQuery.js';
+import { registerUpdateTool } from './tools/executeUpdate.js';
+import { registerInsertTool } from './tools/executeInsert.js';
+import { registerProcedureTool } from './tools/executeProcedure.js';
+import { registerSchemaTool } from './tools/schemaIntrospection.js';
 
 /**
  * Creates, initialises, and returns the MCP server.
