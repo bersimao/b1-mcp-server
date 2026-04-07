@@ -98,16 +98,22 @@ export function stripComments(sql: string): string {
 }
 
 /**
- * Checks whether a semicolon exists outside of string literals.
+ * Checks whether a semicolon exists outside of string literals and
+ * outside of BEGIN...END / DO BEGIN...END blocks.
  * Indicates a multi-statement query.
+ *
+ * Semicolons inside instruction blocks are statement separators within
+ * a single compound statement, not multi-statement indicators.
  */
 export function hasMultipleStatements(sql: string): boolean {
   let inSingleQuote = false;
-  let foundSemicolon = false;
+  let blockDepth = 0;
+  const upper = sql.toUpperCase();
 
   for (let i = 0; i < sql.length; i++) {
     const ch = sql[i];
 
+    // --- String literal tracking ---
     if (ch === '\'' && !inSingleQuote) {
       inSingleQuote = true;
       continue;
@@ -122,14 +128,34 @@ export function hasMultipleStatements(sql: string): boolean {
     }
     if (inSingleQuote) continue;
 
-    if (ch === ';') {
+    // --- Block depth tracking (BEGIN...END) ---
+    // Check for DO BEGIN or BEGIN keyword at word boundary
+    if (i + 8 <= upper.length && upper.slice(i, i + 8).match(/^DO\s+BEGIN/) && (i === 0 || /\W/.test(upper[i - 1]))) {
+      const m = upper.slice(i).match(/^DO\s+BEGIN\b/);
+      if (m) {
+        blockDepth++;
+        i += m[0].length - 1;
+        continue;
+      }
+    }
+    if (i + 5 <= upper.length && upper.slice(i, i + 5) === 'BEGIN' && (i === 0 || /\W/.test(upper[i - 1])) && (i + 5 >= upper.length || /\W/.test(upper[i + 5]))) {
+      blockDepth++;
+      i += 4;
+      continue;
+    }
+    if (i + 3 <= upper.length && upper.slice(i, i + 3) === 'END' && (i === 0 || /\W/.test(upper[i - 1])) && (i + 3 >= upper.length || /\W/.test(upper[i + 3]))) {
+      blockDepth = Math.max(0, blockDepth - 1);
+      i += 2;
+      continue;
+    }
+
+    // --- Semicolon detection (only outside blocks) ---
+    if (ch === ';' && blockDepth === 0) {
       // Check if there's any non-whitespace after the semicolon
       const remaining = sql.slice(i + 1).trim();
       if (remaining.length > 0) {
         return true;
       }
-      // Trailing semicolon is fine (single statement)
-      foundSemicolon = true;
     }
   }
 
@@ -155,8 +181,8 @@ export function detectOperation(sql: string): OperationType {
     }
   }
 
-  // Handle DO BEGIN (HANA instruction blocks)
-  if (upper.startsWith('DO')) {
+  // Handle DO BEGIN (HANA) and bare BEGIN (MSSQL) instruction blocks
+  if (upper.startsWith('DO') || upper.startsWith('BEGIN')) {
     // Could contain anything inside — need to find the real operation
     return detectOperationInsideBlock(cleaned);
   }
@@ -269,6 +295,21 @@ export function extractTables(sql: string): string[] {
   const cleaned = stripComments(sql);
   const tables: Set<string> = new Set();
 
+  // Helper: check if a position is inside a single-quoted string literal
+  const isInStringLiteral = (str: string, position: number): boolean => {
+    let inQuote = false;
+    for (let j = 0; j < position; j++) {
+      if (str[j] === '\'') {
+        if (inQuote && j + 1 < str.length && str[j + 1] === '\'') {
+          j++; // Skip escaped quote
+          continue;
+        }
+        inQuote = !inQuote;
+      }
+    }
+    return inQuote;
+  };
+
   // Helper: extract the next identifier (possibly quoted) after a position
   const extractIdentifier = (str: string, startPos: number): string | null => {
     let pos = startPos;
@@ -323,6 +364,7 @@ export function extractTables(sql: string): string[] {
   const updatePattern = /\bUPDATE\s+/gi;
   let match: RegExpExecArray | null;
   while ((match = updatePattern.exec(cleaned)) !== null) {
+    if (isInStringLiteral(cleaned, match.index)) continue;
     const table = extractIdentifier(cleaned, match.index + match[0].length);
     if (table) tables.add(table);
   }
@@ -330,6 +372,7 @@ export function extractTables(sql: string): string[] {
   // Pattern: INSERT INTO <table>
   const insertPattern = /\bINSERT\s+INTO\s+/gi;
   while ((match = insertPattern.exec(cleaned)) !== null) {
+    if (isInStringLiteral(cleaned, match.index)) continue;
     const table = extractIdentifier(cleaned, match.index + match[0].length);
     if (table) tables.add(table);
   }
@@ -337,6 +380,7 @@ export function extractTables(sql: string): string[] {
   // Pattern: FROM <table>  and  JOIN <table>
   const fromJoinPattern = /\b(?:FROM|JOIN)\s+/gi;
   while ((match = fromJoinPattern.exec(cleaned)) !== null) {
+    if (isInStringLiteral(cleaned, match.index)) continue;
     const table = extractIdentifier(cleaned, match.index + match[0].length);
     if (table) {
       // Filter out subqueries: if the "table" starts with ( it's a subquery
@@ -351,6 +395,7 @@ export function extractTables(sql: string): string[] {
   // Pattern: DROP TABLE [IF EXISTS] <table>
   const dropPattern = /\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?/gi;
   while ((match = dropPattern.exec(cleaned)) !== null) {
+    if (isInStringLiteral(cleaned, match.index)) continue;
     const table = extractIdentifier(cleaned, match.index + match[0].length);
     if (table) tables.add(table);
   }

@@ -18,7 +18,7 @@ describe('buildUpdate', () => {
     }, 'hana');
 
     expect(result.sql).toBe(
-      `UPDATE "ORDR" SET "U_CustomField" = 'new value' WHERE "DocEntry" = 1`
+      `UPDATE {db}."ORDR" SET "U_CustomField" = 'new value' WHERE "DocEntry" = 1`
     );
     expect(result.params).toEqual([]);
   });
@@ -138,7 +138,7 @@ describe('buildInsert', () => {
     }, 'hana');
 
     expect(result.sql).toBe(
-      'INSERT INTO "@MY_UDT" ("Code", "Name") VALUES (?, ?)'
+      'INSERT INTO {db}."@MY_UDT" ("Code", "Name") VALUES (?, ?)'
     );
     expect(result.params).toEqual(['001', 'Test']);
   });

@@ -13,6 +13,7 @@ import { DbAdapter } from '../db/adapter.js';
 import { AuditLogger } from '../logging/auditLogger.js';
 import { Config } from '../config/settings.js';
 import { OperationType, StructuredUpdate, WhereCondition } from '../types/index.js';
+import { RateLimiter } from '../rateLimit/rateLimiter.js';
 
 const whereConditionSchema = z.object({
   field: z.string(),
@@ -22,7 +23,7 @@ const whereConditionSchema = z.object({
 });
 
 export function registerUpdateTool(
-  server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config,
+  server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config, rateLimiter: RateLimiter,
 ): void {
   const dbName = adapter.getDbName();
   const dbType = adapter.getDbType();
@@ -47,6 +48,11 @@ Rules:
       rawSql: z.string().optional().describe('Raw UPDATE SQL for complex expressions (fallback path)'),
     },
     async ({ table, set, where, rawSql }) => {
+      const rateCheck = rateLimiter.check('execute_update');
+      if (!rateCheck.allowed) {
+        return { content: [{ type: 'text' as const, text: `Rate limit exceeded for execute_update. Try again in ${Math.ceil(rateCheck.retryAfterMs / 1000)}s.` }], isError: true };
+      }
+
       const hasStructured = table && set && where;
       const hasRaw = rawSql && rawSql.trim().length > 0;
 
@@ -74,6 +80,10 @@ Rules:
 
         const auditEntry = logger.createEntry({ tool: 'execute_update', database: dbName, dbType, operation: OperationType.UPDATE, tables: [table!], query: built.sql, decision: 'ALLOW', reason: 'Structured update passed all checks.', rule: 'structuredUpdateRule' });
         logger.log(auditEntry);
+
+        if (config.dryRun) {
+          return { content: [{ type: 'text' as const, text: `[DRY RUN] Update validated and ALLOWED.\nTable: ${table}\nSQL: ${built.sql}` }] };
+        }
 
         try {
           const result = await adapter.executeUpdate(built.sql);
@@ -107,6 +117,10 @@ Rules:
 
       const auditEntry = logger.createEntry({ tool: 'execute_update', database: dbName, dbType, operation: OperationType.UPDATE, tables: guardrail.parsed.tables, query: rawSql!, decision: 'ALLOW', reason: 'Raw UPDATE passed all checks.', rule: guardrail.rule });
       logger.log(auditEntry);
+
+      if (config.dryRun) {
+        return { content: [{ type: 'text' as const, text: `[DRY RUN] Raw UPDATE validated and ALLOWED.\nTables: ${guardrail.parsed.tables.join(', ')}\nSQL: ${rawSql}` }] };
+      }
 
       try {
         const result = await adapter.executeUpdate(rawSql!);

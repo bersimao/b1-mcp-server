@@ -79,6 +79,8 @@ src/
   inspection/
     procedureInspector.ts     — Scans SP bodies for prohibited DML
     procedureCache.ts         — SHA-256 hash cache with TTL + LRU eviction
+  rateLimit/
+    rateLimiter.ts            — Sliding-window rate limiter per tool
   tools/
     executeQuery.ts           — SELECT only
     executeUpdate.ts          — Structured JSON or raw SQL
@@ -86,18 +88,20 @@ src/
     executeProcedure.ts       — With SP body inspection
     schemaIntrospection.ts    — Read-only metadata
 tests/                        — Mirrors src/ structure, uses vitest
+  integration/
+    tools.test.ts             — End-to-end tests with mock DirectDb
 ```
 
 ## Current Status
 - **Phase 1 (guardrails + parser + classifier)**: Complete with exhaustive tests.
 - **Phase 2 (DB integration + tools)**: Complete. All 5 tools wired to adapter.
 - **Phase 3 (server + audit logging)**: Complete.
-- **Phase 4 (polish)**: Not started. Remaining items:
-  - Rate limiting (prevent AI runaway loops)
-  - Dry-run mode (validate without executing)
+- **Phase 4 (polish)**: Complete. Delivered:
+  - Rate limiting via sliding-window counter (src/rateLimit/rateLimiter.ts)
+  - Dry-run mode (MCP_DRY_RUN=true validates without executing)
   - SECURITY.md documentation
-  - SQL builder tests need updating for {db} prefix
-  - Integration tests with mock DirectDb
+  - All pre-existing test failures fixed (parser, SQL builder, procedure inspector)
+  - Integration tests with mock DirectDb (tests/integration/tools.test.ts)
 
 ## Key Design Decisions
 1. **Deny by default.** Unrecognised operations are rejected.

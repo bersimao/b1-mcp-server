@@ -17,6 +17,7 @@ import { loadConfig, Config } from '../config/settings.js';
 import { AuditLogger } from '../logging/auditLogger.js';
 import { DbAdapter, DirectDbModule } from '../db/adapter.js';
 import { ProcedureInspectionCache } from '../inspection/procedureCache.js';
+import { RateLimiter } from '../rateLimit/rateLimiter.js';
 import { registerQueryTool } from '../tools/executeQuery.js';
 import { registerUpdateTool } from '../tools/executeUpdate.js';
 import { registerInsertTool } from '../tools/executeInsert.js';
@@ -51,6 +52,11 @@ export async function createServer(directDb: DirectDbModule): Promise<McpServer>
     ttlMs: config.procedureCacheTtlMs,
   });
 
+  const rateLimiter = new RateLimiter({
+    maxCalls: config.rateLimitMaxCalls,
+    windowMs: config.rateLimitWindowMs,
+  });
+
   // Create MCP server
   const server = new McpServer({
     name: 'sps-mcp-server',
@@ -58,11 +64,11 @@ export async function createServer(directDb: DirectDbModule): Promise<McpServer>
   });
 
   // Register tools — all tools share the same adapter (single DB connection)
-  registerQueryTool(server, adapter, logger, config);
-  registerUpdateTool(server, adapter, logger, config);
-  registerInsertTool(server, adapter, logger, config);
-  registerProcedureTool(server, adapter, logger, config, inspectionCache);
-  registerSchemaTool(server, adapter, logger, config);
+  registerQueryTool(server, adapter, logger, config, rateLimiter);
+  registerUpdateTool(server, adapter, logger, config, rateLimiter);
+  registerInsertTool(server, adapter, logger, config, rateLimiter);
+  registerProcedureTool(server, adapter, logger, config, inspectionCache, rateLimiter);
+  registerSchemaTool(server, adapter, logger, config, rateLimiter);
 
   logger.debug(
     `All tools registered. Connected to ${config.dbType}://${config.dbServer}/${config.dbName}`

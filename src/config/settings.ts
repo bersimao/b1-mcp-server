@@ -39,6 +39,15 @@ export interface Config {
 
   /** Procedure inspection cache max size. */
   procedureCacheMaxSize: number;
+
+  /** Rate limit: max calls per tool within the window. */
+  rateLimitMaxCalls: number;
+
+  /** Rate limit: window size in milliseconds. */
+  rateLimitWindowMs: number;
+
+  /** Dry-run mode: validate queries but don't execute them. */
+  dryRun: boolean;
 }
 
 export function loadConfig(): Config {
@@ -81,5 +90,15 @@ export function loadConfig(): Config {
     procedureCacheMaxSize: parseInt(
       process.env.MCP_PROCEDURE_CACHE_MAX_SIZE || '200', 10
     ),
+
+    rateLimitMaxCalls: parseInt(
+      process.env.MCP_RATE_LIMIT_MAX_CALLS || '60', 10
+    ),
+
+    rateLimitWindowMs: parseInt(
+      process.env.MCP_RATE_LIMIT_WINDOW_MS || String(60 * 1000), 10
+    ),
+
+    dryRun: process.env.MCP_DRY_RUN === 'true',
   };
 }

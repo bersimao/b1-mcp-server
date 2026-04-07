@@ -8,6 +8,7 @@ import { DbAdapter } from '../db/adapter.js';
 import { AuditLogger } from '../logging/auditLogger.js';
 import { Config } from '../config/settings.js';
 import { OperationType, DbType } from '../types/index.js';
+import { RateLimiter } from '../rateLimit/rateLimiter.js';
 
 function buildSchemaQuery(objectType: string, filter: string | undefined, dbType: DbType): string {
   const likeClause = filter ? ` AND UPPER(%%NAME%%) LIKE UPPER('${filter.replace(/'/g, "''")}')` : '';
@@ -40,7 +41,7 @@ function buildSchemaQuery(objectType: string, filter: string | undefined, dbType
 }
 
 export function registerSchemaTool(
-  server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config,
+  server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config, rateLimiter: RateLimiter,
 ): void {
   const dbName = adapter.getDbName();
   const dbType = adapter.getDbType();
@@ -55,6 +56,11 @@ For "columns": provide the table name in "filter". For "tables"/"procedures": fi
       filter: z.string().optional().describe('For columns: table name (required). For tables/procedures: optional LIKE pattern.'),
     },
     async ({ objectType, filter }) => {
+      const rateCheck = rateLimiter.check('get_schema_info');
+      if (!rateCheck.allowed) {
+        return { content: [{ type: 'text' as const, text: `Rate limit exceeded for get_schema_info. Try again in ${Math.ceil(rateCheck.retryAfterMs / 1000)}s.` }], isError: true };
+      }
+
       const query = buildSchemaQuery(objectType, filter, dbType);
 
       logger.log(logger.createEntry({ tool: 'get_schema_info', database: dbName, dbType, operation: OperationType.SELECT, tables: [], query, decision: 'ALLOW', reason: `Schema introspection: ${objectType}`, rule: 'schemaIntrospection' }));

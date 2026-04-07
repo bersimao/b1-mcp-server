@@ -9,10 +9,11 @@ import { DbAdapter } from '../db/adapter.js';
 import { AuditLogger } from '../logging/auditLogger.js';
 import { Config } from '../config/settings.js';
 import { OperationType } from '../types/index.js';
+import { RateLimiter } from '../rateLimit/rateLimiter.js';
 
 export function registerProcedureTool(
   server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config,
-  inspectionCache: ProcedureInspectionCache,
+  inspectionCache: ProcedureInspectionCache, rateLimiter: RateLimiter,
 ): void {
   const dbName = adapter.getDbName();
   const dbType = adapter.getDbType();
@@ -27,6 +28,11 @@ The procedure's source code is inspected before execution.`,
       parameters: z.array(z.any()).optional().describe('Positional parameter values for the procedure (in order)'),
     },
     async ({ procedure, parameters }) => {
+      const rateCheck = rateLimiter.check('execute_procedure');
+      if (!rateCheck.allowed) {
+        return { content: [{ type: 'text' as const, text: `Rate limit exceeded for execute_procedure. Try again in ${Math.ceil(rateCheck.retryAfterMs / 1000)}s.` }], isError: true };
+      }
+
       const params = parameters || [];
 
       // Step 1: Fetch procedure source
@@ -56,7 +62,11 @@ The procedure's source code is inspected before execution.`,
       const auditEntry = logger.createEntry({ tool: 'execute_procedure', database: dbName, dbType, operation: OperationType.EXEC, tables: [], query: `CALL/EXEC ${procedure}(${params.map((_, i) => `?`).join(', ')})`, decision: 'ALLOW', reason: `Procedure "${procedure}" passed inspection.`, rule: 'procedureInspection' });
       logger.log(auditEntry);
 
-      // Step 4: Execute
+      // Step 4: Execute (or dry-run)
+      if (config.dryRun) {
+        return { content: [{ type: 'text' as const, text: `[DRY RUN] Procedure "${procedure}" validated and ALLOWED.\nInspection: ${inspection.reason}` }] };
+      }
+
       try {
         const result = await adapter.executeProcedure(procedure, params);
         auditEntry.durationMs = result.durationMs;

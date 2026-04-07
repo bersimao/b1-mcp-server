@@ -10,11 +10,12 @@ import { DbAdapter } from '../db/adapter.js';
 import { AuditLogger } from '../logging/auditLogger.js';
 import { Config } from '../config/settings.js';
 import { OperationType, StructuredInsert } from '../types/index.js';
+import { RateLimiter } from '../rateLimit/rateLimiter.js';
 
 const fieldValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
 export function registerInsertTool(
-  server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config,
+  server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config, rateLimiter: RateLimiter,
 ): void {
   const dbName = adapter.getDbName();
   const dbType = adapter.getDbType();
@@ -35,6 +36,11 @@ Rules:
       rows: z.array(z.record(fieldValueSchema)).optional().describe('Array of column-value pairs for multi-row insert'),
     },
     async ({ table, values, rows }) => {
+      const rateCheck = rateLimiter.check('execute_insert');
+      if (!rateCheck.allowed) {
+        return { content: [{ type: 'text' as const, text: `Rate limit exceeded for execute_insert. Try again in ${Math.ceil(rateCheck.retryAfterMs / 1000)}s.` }], isError: true };
+      }
+
       const structured: StructuredInsert = { table, values, rows };
 
       const guardrail = validateStructuredInsert(structured);
@@ -47,6 +53,10 @@ Rules:
 
       const auditEntry = logger.createEntry({ tool: 'execute_insert', database: dbName, dbType, operation: OperationType.INSERT, tables: [table], query: built.sql, decision: 'ALLOW', reason: 'Structured insert passed all checks.', rule: 'structuredInsertRule' });
       logger.log(auditEntry);
+
+      if (config.dryRun) {
+        return { content: [{ type: 'text' as const, text: `[DRY RUN] Insert validated and ALLOWED.\nTable: ${table}\nSQL: ${built.sql}` }] };
+      }
 
       try {
         const result = await adapter.executeInsert(built.sql, built.params);

@@ -10,9 +10,10 @@ import { DbAdapter } from '../db/adapter.js';
 import { AuditLogger } from '../logging/auditLogger.js';
 import { Config } from '../config/settings.js';
 import { OperationType } from '../types/index.js';
+import { RateLimiter } from '../rateLimit/rateLimiter.js';
 
 export function registerQueryTool(
-  server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config,
+  server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config, rateLimiter: RateLimiter,
 ): void {
   const dbName = adapter.getDbName();
   const dbType = adapter.getDbType();
@@ -31,6 +32,11 @@ Only SELECT statements are accepted. For write operations use:
         .describe('Placeholder values for parameterised queries'),
     },
     async ({ query, parameters }) => {
+      const rateCheck = rateLimiter.check('execute_query');
+      if (!rateCheck.allowed) {
+        return { content: [{ type: 'text' as const, text: `Rate limit exceeded for execute_query. Try again in ${Math.ceil(rateCheck.retryAfterMs / 1000)}s.` }], isError: true };
+      }
+
       const params = parameters || [];
 
       const inputCheck = validateInput(query);
@@ -47,6 +53,10 @@ Only SELECT statements are accepted. For write operations use:
 
       const auditEntry = logger.createEntry({ tool: 'execute_query', database: dbName, dbType, operation: OperationType.SELECT, tables: guardrail.parsed.tables, query, decision: 'ALLOW', reason: guardrail.reason, rule: guardrail.rule });
       logger.log(auditEntry);
+
+      if (config.dryRun) {
+        return { content: [{ type: 'text' as const, text: `[DRY RUN] Query validated and ALLOWED.\nOperation: SELECT\nTables: ${guardrail.parsed.tables.join(', ') || '(none detected)'}\nQuery: ${query}` }] };
+      }
 
       try {
         const result = await adapter.executeSelect(query, params);

@@ -210,7 +210,11 @@ function validateStatement(stmt: ExtractedStatement): ProcedureViolation | null 
 
     // ----- INSERT: blocked on SAP_CORE -----
     case OperationType.INSERT: {
-      for (const table of tables) {
+      // Only check the INSERT target table, not tables from SELECT/FROM/JOIN.
+      // For "INSERT INTO #temp SELECT * FROM ORDR", only #temp matters.
+      const insertTarget = extractInsertTarget(stmt.fragment);
+      const tablesToCheck = insertTarget ? [insertTarget] : tables;
+      for (const table of tablesToCheck) {
         const tableType = classifyTable(table);
         if (tableType === TableType.SAP_CORE) {
           return {
@@ -313,6 +317,26 @@ function validateStatement(stmt: ExtractedStatement): ProcedureViolation | null 
     default:
       return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Extracts only the target table from an INSERT statement fragment.
+ * For "INSERT INTO #temp SELECT * FROM ORDR", returns "#temp".
+ */
+function extractInsertTarget(fragment: string): string | null {
+  const match = fragment.match(/\bINSERT\s+INTO\s+/i);
+  if (!match || match.index === undefined) return null;
+
+  const afterInto = fragment.slice(match.index + match[0].length).trim();
+  // Extract identifier: handles quoted ("table"), bracket ([table]), and plain names
+  const identMatch = afterInto.match(/^(?:"[^"]+"|`[^`]+`|\[[^\]]+\]|[\w@#$.]+)/);
+  if (!identMatch) return null;
+
+  return identMatch[0];
 }
 
 // ---------------------------------------------------------------------------
