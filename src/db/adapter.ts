@@ -180,6 +180,26 @@ export class DbAdapter {
   }
 
   /**
+   * Executes a DELETE query (plain text, no parameter binding).
+   */
+  async executeDelete(query: string): Promise<QueryResult> {
+    this.ensureInitialised();
+    const start = Date.now();
+
+    try {
+      const data = await this.directDb.executeQuery(query, undefined);
+
+      return {
+        data,
+        rowCount: typeof data === 'number' ? data : 0,
+        durationMs: Date.now() - start,
+      };
+    } catch (err) {
+      throw this.wrapError(err, 'executeDelete');
+    }
+  }
+
+  /**
    * Executes an INSERT query with ? placeholder binding.
    */
   async executeInsert(query: string, params: FieldValue[]): Promise<QueryResult> {

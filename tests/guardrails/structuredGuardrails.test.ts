@@ -183,12 +183,14 @@ describe('Structured UPDATE guardrail', () => {
 describe('Structured INSERT guardrail', () => {
   // --- ALLOWED ---
 
-  it('allows INSERT into SAP user table', () => {
+  it('allows INSERT into SAP user table with confirmation required', () => {
     const r = validateStructuredInsert({
       table: '@MY_UDT',
       values: { Code: '001', Name: 'Test' },
     });
     expect(r.allowed).toBe(true);
+    expect(r.requiresConfirmation).toBe(true);
+    expect(r.confirmationMessage).toContain('@MY_UDT');
   });
 
   it('allows INSERT into custom table', () => {

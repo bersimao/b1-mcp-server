@@ -29,13 +29,15 @@ Multi-row:  { "table": "MY_TABLE", "rows": [{ "A": 1 }, { "A": 2 }] }
 
 Rules:
 - INSERT on SAP core tables (4-char names) is permanently blocked.
-- INSERT on SAP user tables (@-prefixed) and custom tables is allowed.`,
+- INSERT on SAP user tables (@-prefixed) requires user confirmation.
+- INSERT on custom tables is allowed.`,
     {
       table: z.string().describe('Target table name'),
       values: z.record(fieldValueSchema).optional().describe('Column-value pairs for single-row insert'),
       rows: z.array(z.record(fieldValueSchema)).optional().describe('Array of column-value pairs for multi-row insert'),
+      confirmed: z.boolean().optional().describe('Set to true after the user has confirmed the operation on SAP user tables'),
     },
-    async ({ table, values, rows }) => {
+    async ({ table, values, rows, confirmed }) => {
       const rateCheck = rateLimiter.check('execute_insert');
       if (!rateCheck.allowed) {
         return { content: [{ type: 'text' as const, text: `Rate limit exceeded for execute_insert. Try again in ${Math.ceil(rateCheck.retryAfterMs / 1000)}s.` }], isError: true };
@@ -47,6 +49,11 @@ Rules:
       if (!guardrail.allowed) {
         logger.log(logger.createEntry({ tool: 'execute_insert', database: dbName, dbType, operation: OperationType.INSERT, tables: [table], query: JSON.stringify(structured), decision: 'DENY', reason: guardrail.reason, rule: guardrail.rule }));
         return { content: [{ type: 'text' as const, text: guardrail.reason }], isError: true };
+      }
+
+      if (guardrail.requiresConfirmation && !confirmed) {
+        logger.log(logger.createEntry({ tool: 'execute_insert', database: dbName, dbType, operation: OperationType.INSERT, tables: [table], query: JSON.stringify(structured), decision: 'PENDING_CONFIRMATION', reason: guardrail.reason, rule: guardrail.rule }));
+        return { content: [{ type: 'text' as const, text: guardrail.confirmationMessage! + '\n\nTo proceed, call this tool again with the same parameters and `confirmed: true`.' }] };
       }
 
       const built = buildInsert(structured, dbType);

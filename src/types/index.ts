@@ -85,6 +85,16 @@ export interface GuardrailResult {
 
   /** Which rule produced this result (for audit logging). */
   rule: string;
+
+  /**
+   * When true, the operation is allowed but requires explicit user confirmation.
+   * The tool should return a confirmation prompt instead of executing, and only
+   * proceed when re-called with confirmed: true.
+   */
+  requiresConfirmation?: boolean;
+
+  /** Message shown to the user when confirmation is required. */
+  confirmationMessage?: string;
 }
 
 /**
@@ -109,7 +119,7 @@ export interface AuditEntry {
   operation:   OperationType;
   tables:      string[];
   tableTypes:  TableType[];
-  decision:    'ALLOW' | 'DENY';
+  decision:    'ALLOW' | 'DENY' | 'PENDING_CONFIRMATION';
   reason:      string;
   rule:        string;
   query:       string;

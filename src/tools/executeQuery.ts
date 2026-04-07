@@ -24,6 +24,7 @@ export function registerQueryTool(
 Only SELECT statements are accepted. For write operations use:
   - "execute_update" for UPDATE
   - "execute_insert" for INSERT
+  - "execute_delete" for DELETE
   - "execute_procedure" for stored procedure calls`,
     {
       query: z.string().describe('The SELECT query to execute'),

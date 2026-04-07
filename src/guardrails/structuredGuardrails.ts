@@ -299,7 +299,10 @@ export function validateStructuredInsert(insert: StructuredInsert): GuardrailRes
     };
   }
 
-  // 4. Must have values or rows (not both, not neither)
+  // 4. SAP_USER: allowed but requires user confirmation
+  const isSapUser = tableType === TableType.SAP_USER;
+
+  // 5. Must have values or rows (not both, not neither)
   const hasValues = insert.values && Object.keys(insert.values).length > 0;
   const hasRows = insert.rows && insert.rows.length > 0;
 
@@ -319,7 +322,7 @@ export function validateStructuredInsert(insert: StructuredInsert): GuardrailRes
     };
   }
 
-  // 5. Validate single-row insert
+  // 6. Validate single-row insert
   if (hasValues && insert.values) {
     for (const [col, val] of Object.entries(insert.values)) {
       const colCheck = validateColumnName(col);
@@ -330,7 +333,7 @@ export function validateStructuredInsert(insert: StructuredInsert): GuardrailRes
     }
   }
 
-  // 6. Validate multi-row insert
+  // 7. Validate multi-row insert
   if (hasRows && insert.rows) {
     if (insert.rows.length > MAX_INSERT_ROWS) {
       return {
@@ -361,6 +364,19 @@ export function validateStructuredInsert(insert: StructuredInsert): GuardrailRes
         if (valCheck) return valCheck;
       }
     }
+  }
+
+  if (isSapUser) {
+    return {
+      allowed: true,
+      reason: `Structured INSERT on SAP user table "${insert.table}" requires user confirmation.`,
+      rule: 'structuredInsertRule',
+      requiresConfirmation: true,
+      confirmationMessage:
+        `⚠️ INSERT on SAP user table "${insert.table}" (UDT)\n\n` +
+        `This will add rows to a SAP B1 User-Defined Table. ` +
+        `Please confirm that you want to proceed.`,
+    };
   }
 
   return {

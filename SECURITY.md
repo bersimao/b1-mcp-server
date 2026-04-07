@@ -19,6 +19,7 @@ Operations are separated into dedicated tools with distinct security profiles:
 | `execute_query` | SELECT only | Low |
 | `execute_update` | UPDATE only | Medium |
 | `execute_insert` | INSERT only | Medium |
+| `execute_delete` | DELETE only | Medium (confirmation-gated) |
 | `execute_procedure` | SP calls | High (inspected) |
 | `get_schema_info` | Metadata | None |
 
@@ -31,11 +32,13 @@ Every table is classified by its name:
 | Type | Pattern | Example | INSERT | UPDATE | DELETE | DROP |
 |------|---------|---------|--------|--------|--------|------|
 | **SAP_CORE** | ≤ 4 chars | ORDR, OITM, INV1 | Blocked | U_* only | Blocked | Blocked |
-| **SAP_USER** | @-prefixed | @MY_UDT | Allowed | Allowed | Blocked | Blocked |
+| **SAP_USER** | @-prefixed | @MY_UDT | Confirmation | Allowed | Confirmation | Blocked |
 | **CUSTOM** | > 4 chars | MY_TABLE | Allowed | Allowed | Allowed | Block-scoped |
 | **TEMP** | # or ## prefixed | #temp | Allowed | Allowed | Allowed | Block-scoped |
 
 **SAP_CORE tables are the most protected.** SAP B1 manages these through its own DI API/Service Layer. Direct INSERT is permanently blocked. UPDATE is limited to User-Defined Fields (columns starting with `U_`). DELETE and DROP are permanently blocked.
+
+**SAP_USER tables (@-prefixed UDTs) use a confirmation gate.** INSERT and DELETE on these tables are allowed but require explicit user confirmation before execution. The AI receives a confirmation prompt and must re-call the tool with `confirmed: true` after the user approves.
 
 ### Layer 3 — SQL Parser & Guardrails
 
@@ -83,11 +86,20 @@ The preferred input path uses structured JSON rather than raw SQL:
 
 The server builds parameterised SQL from the JSON. This eliminates SQL parsing vulnerabilities entirely — no CASE expression ambiguity, no comment hiding, no quoting tricks.
 
-### Layer 7 — Rate Limiting
+### Layer 7 — User Confirmation Gate
+
+Operations on SAP User-Defined Tables (UDTs) that could modify data require explicit user confirmation:
+
+- **INSERT on SAP_USER tables**: The tool returns a confirmation prompt instead of executing. The AI must show the prompt to the user and re-call with `confirmed: true`.
+- **DELETE on SAP_USER tables**: Same confirmation flow via the `execute_delete` tool.
+
+This prevents the AI from autonomously modifying UDT data without the user's knowledge. The confirmation is enforced server-side — the `confirmed` parameter is checked after guardrails pass, so it cannot bypass security rules.
+
+### Layer 8 — Rate Limiting
 
 A sliding-window rate limiter prevents AI runaway loops. Each tool has its own counter. Configurable via `MCP_RATE_LIMIT_MAX_CALLS` (default: 60) and `MCP_RATE_LIMIT_WINDOW_MS` (default: 60 seconds).
 
-### Layer 8 — Audit Logging
+### Layer 9 — Audit Logging
 
 Every operation is logged BEFORE execution — including denied operations. The audit log uses append-only JSON Lines format and writes to both stderr and a configurable file path.
 
@@ -99,7 +111,9 @@ Each entry records: timestamp, tool, database, operation type, tables, table typ
 - **EXEC / EXECUTE / CALL in raw SQL** — must use the `execute_procedure` tool
 - **Multi-statement queries** — semicolons outside BEGIN...END blocks
 - **INSERT on SAP core tables** — SAP manages row creation
-- **DELETE on SAP core and user tables** — destructive operations on SAP data
+- **INSERT on SAP user tables without confirmation** — requires user approval
+- **DELETE on SAP core tables** — destructive operations on SAP core data
+- **DELETE on SAP user tables without confirmation** — requires user approval
 - **DROP on SAP core and user tables** — permanent
 
 ## Connection Security

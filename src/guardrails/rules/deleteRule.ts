@@ -6,7 +6,8 @@
 //   → DENY — absolutely no exceptions.
 //
 // SAP_USER tables (@-prefixed):
-//   → DENY — absolutely no exceptions.
+//   → ALLOW with user confirmation — these are user-defined tables
+//     that may legitimately need row deletion.
 //
 // CUSTOM / TEMP tables:
 //   → ALLOW (with audit logging, handled upstream).
@@ -38,9 +39,14 @@ export function evaluateDelete(parsed: ParsedQuery): GuardrailResult {
 
     if (tableType === TableType.SAP_USER) {
       return {
-        allowed: false,
-        reason: `DELETE is permanently blocked on SAP user table "${table}".`,
+        allowed: true,
+        reason: `DELETE on SAP user table "${table}" requires user confirmation.`,
         rule: 'deleteRule',
+        requiresConfirmation: true,
+        confirmationMessage:
+          `⚠️ DELETE on SAP user table "${table}" (UDT)\n\n` +
+          `This will permanently remove rows from a SAP B1 User-Defined Table. ` +
+          `Please confirm that you want to proceed.`,
       };
     }
   }

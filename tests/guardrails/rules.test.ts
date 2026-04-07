@@ -111,11 +111,13 @@ describe('UPDATE rule', () => {
 describe('INSERT rule', () => {
   // --- ALLOWED cases ---
 
-  it('allows INSERT into SAP user table', () => {
+  it('allows INSERT into SAP user table with confirmation required', () => {
     const r = validate(
       'INSERT INTO "@MY_UDT" ("Code", "Name") VALUES (\'001\', \'Test\')'
     );
     expect(r.allowed).toBe(true);
+    expect(r.requiresConfirmation).toBe(true);
+    expect(r.confirmationMessage).toContain('@MY_UDT');
   });
 
   it('allows INSERT into custom table', () => {
@@ -180,10 +182,11 @@ describe('DELETE rule', () => {
     expect(r.reason).toContain('permanently blocked');
   });
 
-  it('blocks DELETE on SAP user table', () => {
+  it('allows DELETE on SAP user table with confirmation required', () => {
     const r = validate('DELETE FROM "@MY_UDT" WHERE "Code" = \'001\'');
-    expect(r.allowed).toBe(false);
-    expect(r.reason).toContain('permanently blocked');
+    expect(r.allowed).toBe(true);
+    expect(r.requiresConfirmation).toBe(true);
+    expect(r.confirmationMessage).toContain('@MY_UDT');
   });
 
   it('allows DELETE on custom table', () => {

@@ -61,7 +61,7 @@ export function validateReadOnly(sql: string): GuardrailResult & { parsed: Parse
       'Use the "execute_insert" tool instead.',
     [OperationType.DELETE]:
       'DELETE is not allowed through execute_query. ' +
-      'DELETE on SAP core and user tables is permanently blocked.',
+      'Use the "execute_delete" tool instead.',
     [OperationType.DROP]:
       'DROP is not allowed through execute_query.',
     [OperationType.CREATE]:

@@ -44,7 +44,20 @@ export function evaluateInsert(parsed: ParsedQuery): GuardrailResult {
       };
     }
 
-    // SAP_USER, CUSTOM, and TEMP tables: allowed without column restrictions
+    if (tableType === TableType.SAP_USER) {
+      return {
+        allowed: true,
+        reason: `INSERT on SAP user table "${table}" requires user confirmation.`,
+        rule: 'insertRule',
+        requiresConfirmation: true,
+        confirmationMessage:
+          `⚠️ INSERT on SAP user table "${table}" (UDT)\n\n` +
+          `This will add rows to a SAP B1 User-Defined Table. ` +
+          `Please confirm that you want to proceed.`,
+      };
+    }
+
+    // CUSTOM and TEMP tables: allowed without restrictions
   }
 
   return {

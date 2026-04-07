@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
+    "sps-sap-interface": "^2.5.2",
     "zod": "^3.25.0"
   },
   "devDependencies": {

@@ -49,7 +49,7 @@ export class AuditLogger {
 
     // Always write to stderr (safe for MCP stdio transport)
     if (this.shouldLog('info')) {
-      const prefix = entry.decision === 'DENY' ? '⛔' : '✅';
+      const prefix = entry.decision === 'DENY' ? '⛔' : entry.decision === 'PENDING_CONFIRMATION' ? '⏳' : '✅';
       console.error(
         `[audit] ${prefix} ${entry.operation} on ${entry.tables.join(', ')} → ${entry.decision}: ${entry.reason}`
       );
@@ -75,7 +75,7 @@ export class AuditLogger {
     operation: OperationType;
     tables: string[];
     query: string;
-    decision: 'ALLOW' | 'DENY';
+    decision: 'ALLOW' | 'DENY' | 'PENDING_CONFIRMATION';
     reason: string;
     rule: string;
     durationMs?: number;

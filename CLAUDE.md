@@ -14,25 +14,28 @@ A custom MCP server (`sps-mcp-server`) for Claude Code that provides secure, gua
 - `DirectDb.executeProcedure(name, paramsArray)` takes positional array params, not key-value.
 - **Parameter binding (`?`) works for SELECT and INSERT but NOT for UPDATE.** UPDATEs are passed as plain text.
 
-### 5 MCP Tools
+### 6 MCP Tools
 1. **`execute_query`** — Raw SQL, SELECT only. Enforced by `validateReadOnly()`.
 2. **`execute_update`** — Accepts structured JSON (primary) or raw SQL (fallback for complex expressions like CASE, column arithmetic, subqueries). Both paths run through guardrails + sanitiser.
-3. **`execute_insert`** — Structured JSON only. Blocked entirely on SAP core tables.
-4. **`execute_procedure`** — Inspects SP source code before execution via `ProcedureInspectionCache`.
-5. **`get_schema_info`** — Read-only metadata (tables, columns, procedures). Supports HANA and MSSQL catalog syntax.
+3. **`execute_insert`** — Structured JSON only. Blocked on SAP core tables. Requires user confirmation on SAP user tables (@-prefixed UDTs).
+4. **`execute_delete`** — Raw SQL DELETE. Blocked on SAP core tables. Requires user confirmation on SAP user tables. Allowed on custom/temp tables.
+5. **`execute_procedure`** — Inspects SP source code before execution via `ProcedureInspectionCache`.
+6. **`get_schema_info`** — Read-only metadata (tables, columns, procedures). Supports HANA and MSSQL catalog syntax.
 
 ### Security Guardrails — Table Classification
 Tables are classified by name:
 - **SAP_CORE** (≤ 4 chars: ORDR, OITM, INV1, JDT, etc.): Most restrictive. INSERT blocked entirely. UPDATE only on U_* (User-Defined Fields). DELETE/DROP always blocked.
-- **SAP_USER** (@-prefixed: @MY_UDT): INSERT/UPDATE allowed. DELETE/DROP always blocked.
+- **SAP_USER** (@-prefixed: @MY_UDT): INSERT/DELETE allowed with user confirmation. UPDATE allowed. DROP always blocked.
 - **CUSTOM** (> 4 chars, no @): Full CRUD. DROP only inside BEGIN...END blocks.
 - **TEMP** (# or ## prefixed): Full CRUD. Same DROP restriction as CUSTOM.
 
 ### Security Guardrails — Operation Rules
 - **SELECT**: Always allowed (read-only).
 - **INSERT on SAP_CORE**: Always blocked. SAP manages row creation via DI API/Service Layer.
+- **INSERT on SAP_USER**: Allowed with user confirmation (confirmation gate).
 - **UPDATE on SAP_CORE**: Only U_* columns allowed. Non-UDF columns blocked.
-- **DELETE on SAP_CORE or SAP_USER**: Always blocked.
+- **DELETE on SAP_CORE**: Always blocked.
+- **DELETE on SAP_USER**: Allowed with user confirmation (confirmation gate).
 - **DROP on SAP_CORE or SAP_USER**: Always blocked.
 - **DROP on CUSTOM/TEMP**: Only inside instruction blocks (DO BEGIN...END for HANA, BEGIN...END for MSSQL).
 - **EXEC/EXECUTE/CALL**: Blocked in raw SQL. Must use execute_procedure tool (which inspects SP body first).
@@ -68,8 +71,8 @@ src/
     rules/
       selectRule.ts           — Always allow
       updateRule.ts           — UDF-only on SAP_CORE
-      insertRule.ts           — Block all on SAP_CORE
-      deleteRule.ts           — Block on SAP_CORE and SAP_USER
+      insertRule.ts           — Block on SAP_CORE, confirm on SAP_USER
+      deleteRule.ts           — Block on SAP_CORE, confirm on SAP_USER
       dropRule.ts             — Block on SAP, conditional on CUSTOM/TEMP
   sanitisation/
     updateSanitiser.ts        — 4-layer defence for plain-text UPDATEs
@@ -84,7 +87,8 @@ src/
   tools/
     executeQuery.ts           — SELECT only
     executeUpdate.ts          — Structured JSON or raw SQL
-    executeInsert.ts          — Structured JSON only
+    executeInsert.ts          — Structured JSON only, confirmation on SAP_USER
+    executeDelete.ts          — Raw SQL DELETE, confirmation on SAP_USER
     executeProcedure.ts       — With SP body inspection
     schemaIntrospection.ts    — Read-only metadata
 tests/                        — Mirrors src/ structure, uses vitest
@@ -94,7 +98,7 @@ tests/                        — Mirrors src/ structure, uses vitest
 
 ## Current Status
 - **Phase 1 (guardrails + parser + classifier)**: Complete with exhaustive tests.
-- **Phase 2 (DB integration + tools)**: Complete. All 5 tools wired to adapter.
+- **Phase 2 (DB integration + tools)**: Complete. All 6 tools wired to adapter.
 - **Phase 3 (server + audit logging)**: Complete.
 - **Phase 4 (polish)**: Complete. Delivered:
   - Rate limiting via sliding-window counter (src/rateLimit/rateLimiter.ts)

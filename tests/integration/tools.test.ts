@@ -18,6 +18,7 @@ import { RateLimiter } from '../../src/rateLimit/rateLimiter.js';
 import { registerQueryTool } from '../../src/tools/executeQuery.js';
 import { registerUpdateTool } from '../../src/tools/executeUpdate.js';
 import { registerInsertTool } from '../../src/tools/executeInsert.js';
+import { registerDeleteTool } from '../../src/tools/executeDelete.js';
 import { registerProcedureTool } from '../../src/tools/executeProcedure.js';
 import { registerSchemaTool } from '../../src/tools/schemaIntrospection.js';
 
@@ -88,6 +89,7 @@ function captureToolHandlers(
   registerQueryTool(fakeServer, adapter, logger, config, rateLimiter);
   registerUpdateTool(fakeServer, adapter, logger, config, rateLimiter);
   registerInsertTool(fakeServer, adapter, logger, config, rateLimiter);
+  registerDeleteTool(fakeServer, adapter, logger, config, rateLimiter);
   registerProcedureTool(fakeServer, adapter, logger, config, cache, rateLimiter);
   registerSchemaTool(fakeServer, adapter, logger, config, rateLimiter);
 
@@ -204,12 +206,23 @@ describe('execute_insert integration', () => {
     mockDb = ctx.mockDirectDb;
   });
 
-  it('allows INSERT into SAP user table', async () => {
+  it('requires confirmation for INSERT into SAP user table', async () => {
+    const result = await handlers.get('execute_insert')!({
+      table: '@MY_UDT',
+      values: { Code: '001', Name: 'Test' },
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('confirm');
+    expect(result.content[0].text).toContain('@MY_UDT');
+  });
+
+  it('executes INSERT into SAP user table after confirmation', async () => {
     (mockDb.executeQuery as any).mockResolvedValue(1);
 
     const result = await handlers.get('execute_insert')!({
       table: '@MY_UDT',
       values: { Code: '001', Name: 'Test' },
+      confirmed: true,
     });
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('successfully');
@@ -232,6 +245,65 @@ describe('execute_insert integration', () => {
       values: { Col1: 'a', Col2: 1 },
     });
     expect(result.isError).toBeUndefined();
+  });
+});
+
+describe('execute_delete integration', () => {
+  let handlers: Map<string, ToolHandler>;
+  let mockDb: DirectDbModule;
+
+  beforeEach(() => {
+    const ctx = captureToolHandlers(createMockDirectDb());
+    handlers = ctx.handlers;
+    mockDb = ctx.mockDirectDb;
+  });
+
+  it('requires confirmation for DELETE on SAP user table', async () => {
+    const result = await handlers.get('execute_delete')!({
+      query: 'DELETE FROM "@MY_UDT" WHERE "Code" = \'001\'',
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('confirm');
+    expect(result.content[0].text).toContain('@MY_UDT');
+    expect(mockDb.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it('executes DELETE on SAP user table after confirmation', async () => {
+    (mockDb.executeQuery as any).mockResolvedValue(1);
+
+    const result = await handlers.get('execute_delete')!({
+      query: 'DELETE FROM "@MY_UDT" WHERE "Code" = \'001\'',
+      confirmed: true,
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('successfully');
+  });
+
+  it('blocks DELETE on SAP core table even with confirmation', async () => {
+    const result = await handlers.get('execute_delete')!({
+      query: 'DELETE FROM ORDR WHERE "DocEntry" = 1',
+      confirmed: true,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('permanently blocked');
+  });
+
+  it('allows DELETE on custom table without confirmation', async () => {
+    (mockDb.executeQuery as any).mockResolvedValue(1);
+
+    const result = await handlers.get('execute_delete')!({
+      query: 'DELETE FROM MY_CUSTOM_TABLE WHERE "Id" = 1',
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('successfully');
+  });
+
+  it('blocks non-DELETE query through execute_delete', async () => {
+    const result = await handlers.get('execute_delete')!({
+      query: 'SELECT * FROM ORDR',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Expected a DELETE');
   });
 });
 

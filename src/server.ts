@@ -21,6 +21,7 @@ import { RateLimiter } from './rateLimit/rateLimiter.js';
 import { registerQueryTool } from './tools/executeQuery.js';
 import { registerUpdateTool } from './tools/executeUpdate.js';
 import { registerInsertTool } from './tools/executeInsert.js';
+import { registerDeleteTool } from './tools/executeDelete.js';
 import { registerProcedureTool } from './tools/executeProcedure.js';
 import { registerSchemaTool } from './tools/schemaIntrospection.js';
 
@@ -67,6 +68,7 @@ export async function createServer(directDb: DirectDbModule): Promise<McpServer>
   registerQueryTool(server, adapter, logger, config, rateLimiter);
   registerUpdateTool(server, adapter, logger, config, rateLimiter);
   registerInsertTool(server, adapter, logger, config, rateLimiter);
+  registerDeleteTool(server, adapter, logger, config, rateLimiter);
   registerProcedureTool(server, adapter, logger, config, inspectionCache, rateLimiter);
   registerSchemaTool(server, adapter, logger, config, rateLimiter);
 
