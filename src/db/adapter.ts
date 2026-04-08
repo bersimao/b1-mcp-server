@@ -11,7 +11,7 @@
 //   await DirectDb.init({
 //     server: "192.168.0.1:30015",
 //     database: "SBO_DEMO_HANA",
-//     databaseType: DirectDb.DATABASE_TYPES.HANA,  // or .SQL
+//     databaseType: 'HANA',  // or 'SQL'
 //     username: "user01",
 //     password: "1234",
 //   });
@@ -38,11 +38,6 @@ import { DbType, FieldValue } from '../types/index.js';
 // Interface matching the actual sps-sap-interface DirectDb module
 // ---------------------------------------------------------------------------
 
-export interface DirectDbDatabaseTypes {
-  HANA: string;
-  SQL: string;
-}
-
 export interface DirectDbInitConfig {
   server: string;
   database: string;
@@ -52,10 +47,10 @@ export interface DirectDbInitConfig {
 }
 
 export interface DirectDbModule {
-  DATABASE_TYPES: DirectDbDatabaseTypes;
   init(config: DirectDbInitConfig): Promise<any>;
   executeQuery(query: string, params?: any[]): Promise<any>;
   executeProcedure(procedure: string, params?: any[]): Promise<any>;
+  close(): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,9 +94,7 @@ export class DbAdapter {
     username: string;
     password: string;
   }): Promise<void> {
-    const databaseType = config.dbType === 'hana'
-      ? this.directDb.DATABASE_TYPES.HANA
-      : this.directDb.DATABASE_TYPES.SQL;
+    const databaseType = config.dbType === 'hana' ? 'HANA' : 'SQL';
 
     await this.directDb.init({
       server: config.server,

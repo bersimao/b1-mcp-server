@@ -28,7 +28,7 @@ import { registerSchemaTool } from '../../src/tools/schemaIntrospection.js';
 
 function createMockDirectDb(): DirectDbModule {
   return {
-    DATABASE_TYPES: { HANA: 'HANA', SQL: 'SQL' },
+    close: vi.fn(),
     init: vi.fn().mockResolvedValue({}),
     executeQuery: vi.fn().mockResolvedValue([]),
     executeProcedure: vi.fn().mockResolvedValue([]),
