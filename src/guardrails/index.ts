@@ -204,6 +204,80 @@ export function validate(sql: string): GuardrailResult & { parsed: ParsedQuery }
   return { ...result, parsed };
 }
 
+/**
+ * Validates any SQL statement (SELECT, UPDATE, INSERT, DELETE, DROP,
+ * and anonymous blocks like DO BEGIN...END / BEGIN...END).
+ *
+ * Used by the unified execute_sql and execute_sql_ai tools.
+ *
+ * For anonymous blocks:
+ *   - The parser detects the "most dangerous" operation inside the block.
+ *   - Standard guardrails are applied based on that detected operation.
+ *   - Multi-statement detection already respects BEGIN...END depth,
+ *     so semicolons inside blocks are NOT flagged as multi-statement.
+ *
+ * For simple statements:
+ *   - Delegates to the existing validate() function.
+ */
+export function validateAnySql(sql: string): GuardrailResult & { parsed: ParsedQuery } {
+  const parsed = parseQuery(sql);
+
+  // Multi-statement check (already respects BEGIN...END block depth)
+  if (parsed.isMultiStatement) {
+    return {
+      allowed: false,
+      reason:
+        'Multi-statement queries are not allowed. Each operation must be submitted individually. ' +
+        'This prevents chained attacks (e.g., a legitimate SELECT followed by a hidden DROP). ' +
+        'Note: semicolons inside DO BEGIN...END / BEGIN...END blocks are allowed.',
+      rule: 'multiStatementBlock',
+      parsed,
+    };
+  }
+
+  // Block CREATE/ALTER/EXEC regardless of context
+  if (parsed.operation === OperationType.CREATE) {
+    return { allowed: false, reason: 'CREATE statements are not permitted through this MCP server.', rule: 'defaultDeny', parsed };
+  }
+  if (parsed.operation === OperationType.ALTER) {
+    return { allowed: false, reason: 'ALTER statements are not permitted through this MCP server.', rule: 'defaultDeny', parsed };
+  }
+  if (parsed.operation === OperationType.EXEC) {
+    return { allowed: false, reason: 'Direct EXEC/EXECUTE/CALL statements are not permitted. Use the execute_procedure tool instead.', rule: 'defaultDeny', parsed };
+  }
+
+  // Evaluate based on detected operation
+  let result: GuardrailResult;
+
+  switch (parsed.operation) {
+    case OperationType.SELECT:
+      result = evaluateSelect(parsed);
+      break;
+    case OperationType.UPDATE:
+      result = evaluateUpdate(parsed);
+      break;
+    case OperationType.INSERT:
+      result = evaluateInsert(parsed);
+      break;
+    case OperationType.DELETE:
+      result = evaluateDelete(parsed);
+      break;
+    case OperationType.DROP:
+      result = evaluateDrop(parsed);
+      break;
+    case OperationType.OTHER:
+    default:
+      result = {
+        allowed: false,
+        reason: 'Unrecognised SQL operation. Only SELECT, UPDATE, INSERT, DELETE, and DROP are supported.',
+        rule: 'defaultDeny',
+      };
+      break;
+  }
+
+  return { ...result, parsed };
+}
+
 // Re-export parser and classifier for direct use in tools
 export { parseQuery } from './parser.js';
 export { classifyTable, isUserDefinedField } from './tableClassifier.js';

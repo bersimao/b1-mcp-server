@@ -18,10 +18,8 @@ import { AuditLogger } from './logging/auditLogger.js';
 import { DbAdapter, DirectDbModule } from './db/adapter.js';
 import { ProcedureInspectionCache } from './inspection/procedureCache.js';
 import { RateLimiter } from './rateLimit/rateLimiter.js';
-import { registerQueryTool } from './tools/executeQuery.js';
-import { registerUpdateTool } from './tools/executeUpdate.js';
-import { registerInsertTool } from './tools/executeInsert.js';
-import { registerDeleteTool } from './tools/executeDelete.js';
+import { registerSqlTool } from './tools/executeSql.js';
+import { registerSqlAiTool } from './tools/executeSqlAi.js';
 import { registerProcedureTool } from './tools/executeProcedure.js';
 import { registerSchemaTool } from './tools/schemaIntrospection.js';
 import { registerCheckConnectionTool } from './tools/checkConnection.js';
@@ -66,10 +64,8 @@ export async function createServer(directDb: DirectDbModule): Promise<McpServer>
   });
 
   // Register tools — all tools share the same adapter (single DB connection)
-  registerQueryTool(server, adapter, logger, config, rateLimiter);
-  registerUpdateTool(server, adapter, logger, config, rateLimiter);
-  registerInsertTool(server, adapter, logger, config, rateLimiter);
-  registerDeleteTool(server, adapter, logger, config, rateLimiter);
+  registerSqlTool(server, adapter, logger, config, rateLimiter);
+  registerSqlAiTool(server, adapter, logger, config, rateLimiter);
   registerProcedureTool(server, adapter, logger, config, inspectionCache, rateLimiter);
   registerSchemaTool(server, adapter, logger, config, rateLimiter);
   registerCheckConnectionTool(server, adapter, logger, config, rateLimiter);

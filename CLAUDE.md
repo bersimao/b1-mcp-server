@@ -14,13 +14,12 @@ A custom MCP server (`sps-mcp-server`) for Claude Code that provides secure, gua
 - `DirectDb.executeProcedure(name, paramsArray)` takes positional array params, not key-value.
 - **Parameter binding (`?`) works for SELECT and INSERT but NOT for UPDATE.** UPDATEs are passed as plain text.
 
-### 6 MCP Tools
-1. **`execute_query`** — Raw SQL, SELECT only. Enforced by `validateReadOnly()`.
-2. **`execute_update`** — Accepts structured JSON (primary) or raw SQL (fallback for complex expressions like CASE, column arithmetic, subqueries). Both paths run through guardrails + sanitiser.
-3. **`execute_insert`** — Structured JSON only. Blocked on SAP core tables. Requires user confirmation on SAP user tables (@-prefixed UDTs).
-4. **`execute_delete`** — Raw SQL DELETE. Blocked on SAP core tables. Requires user confirmation on SAP user tables. Allowed on custom/temp tables.
-5. **`execute_procedure`** — Inspects SP source code before execution via `ProcedureInspectionCache`.
-6. **`get_schema_info`** — Read-only metadata (tables, columns, procedures). Supports HANA and MSSQL catalog syntax.
+### 5 MCP Tools
+1. **`execute_sql`** — User-provided raw SQL. Supports any operation (SELECT, UPDATE, INSERT, DELETE, DO BEGIN...END blocks). Server-side guardrails for simple statements; AI pre-validates complex anonymous blocks via tool description instructions.
+2. **`execute_sql_ai`** — AI-generated SQL with **mandatory parameterised placeholders** (?). Server rejects queries where placeholder count doesn't match parameters array length. Same guardrails as execute_sql. Supports all operation types.
+3. **`execute_procedure`** — Inspects SP source code before execution via `ProcedureInspectionCache`.
+4. **`get_schema_info`** — Read-only metadata (tables, columns, procedures). Supports HANA and MSSQL catalog syntax.
+5. **`check_connection`** — Lightweight ping to verify database connectivity.
 
 ### Security Guardrails — Table Classification
 Tables are classified by name:
@@ -64,9 +63,10 @@ src/
   logging/auditLogger.ts      — Append-only JSON Lines audit log (stderr + file)
   types/index.ts              — All shared types and enums
   guardrails/
-    index.ts                  — Engine: validateReadOnly(), validateRawUpdate(), validate()
+    index.ts                  — Engine: validateAnySql(), validateReadOnly(), validateRawUpdate(), validate()
     parser.ts                 — SQL tokeniser/classifier (operation type, tables, SET columns)
     tableClassifier.ts        — Table name → SAP_CORE/SAP_USER/CUSTOM/TEMP
+    placeholderValidator.ts   — Counts ? placeholders, validates against parameters array
     structuredGuardrails.ts   — Validates structured JSON operations directly (no SQL parsing)
     rules/
       selectRule.ts           — Always allow
@@ -85,36 +85,40 @@ src/
   rateLimit/
     rateLimiter.ts            — Sliding-window rate limiter per tool
   tools/
-    executeQuery.ts           — SELECT only
-    executeUpdate.ts          — Structured JSON or raw SQL
-    executeInsert.ts          — Structured JSON only, confirmation on SAP_USER
-    executeDelete.ts          — Raw SQL DELETE, confirmation on SAP_USER
+    executeSql.ts             — User-provided SQL (any operation, anonymous blocks)
+    executeSqlAi.ts           — AI-generated SQL (mandatory placeholders)
     executeProcedure.ts       — With SP body inspection
     schemaIntrospection.ts    — Read-only metadata
+    checkConnection.ts        — Database health check
 tests/                        — Mirrors src/ structure, uses vitest
   integration/
     tools.test.ts             — End-to-end tests with mock DirectDb
+  guardrails/
+    placeholderValidator.test.ts — Placeholder counting and validation tests
 ```
 
 ## Current Status
 - **Phase 1 (guardrails + parser + classifier)**: Complete with exhaustive tests.
-- **Phase 2 (DB integration + tools)**: Complete. All 6 tools wired to adapter.
+- **Phase 2 (DB integration + tools)**: Complete.
 - **Phase 3 (server + audit logging)**: Complete.
-- **Phase 4 (polish)**: Complete. Delivered:
-  - Rate limiting via sliding-window counter (src/rateLimit/rateLimiter.ts)
-  - Dry-run mode (MCP_DRY_RUN=true validates without executing)
-  - SECURITY.md documentation
-  - All pre-existing test failures fixed (parser, SQL builder, procedure inspector)
-  - Integration tests with mock DirectDb (tests/integration/tools.test.ts)
+- **Phase 4 (polish)**: Complete (rate limiting, dry-run mode, SECURITY.md).
+- **Phase 5 (tool consolidation)**: Complete. Consolidated 4 operation-specific tools into 2 unified tools:
+  - `execute_sql` (user-provided, any SQL including anonymous blocks)
+  - `execute_sql_ai` (AI-generated, mandatory placeholders)
+  - Added `placeholderValidator` for ? count enforcement
+  - Added `validateAnySql()` unified guardrail entry point
+  - Added `executeSql()` generic adapter method
+  - 351 tests passing across 11 test files
 
 ## Key Design Decisions
 1. **Deny by default.** Unrecognised operations are rejected.
-2. **Structured JSON is primary, raw SQL is fallback.** The server builds SQL from JSON when possible; falls back to guarded raw SQL for complex expressions.
-3. **The server enforces tool selection.** The AI picks the tool, but the server blocks misuse (e.g., UPDATE through execute_query gets denied with a redirect message).
-4. **Audit logging happens BEFORE execution.** Even denied operations are recorded.
-5. **Never modify suspicious queries.** Accept as-is or reject entirely.
-6. **HANA uses CALL, MSSQL uses EXEC/EXECUTE.** Both are detected and blocked in raw SQL.
-7. **{db} placeholder** in all queries for DirectDb schema resolution.
+2. **Two SQL tools by origin, not by operation.** `execute_sql` for user queries (flexible), `execute_sql_ai` for AI queries (strict placeholders). This replaces the old per-operation tool split.
+3. **AI as pre-validator.** For complex SQL (anonymous blocks), the AI validates SAP rules via tool description instructions. Server handles simple statements with hardcoded guardrails.
+4. **Mandatory placeholders for AI.** `execute_sql_ai` rejects queries where ? count doesn't match parameters array length. Prevents SQL injection from AI-generated queries.
+5. **Audit logging happens BEFORE execution.** Even denied operations are recorded.
+6. **Never modify suspicious queries.** Accept as-is or reject entirely.
+7. **HANA uses CALL, MSSQL uses EXEC/EXECUTE.** Both are detected and blocked in raw SQL.
+8. **{db} placeholder** in all queries for DirectDb schema resolution.
 
 ## Tech Stack
 - Node.js + TypeScript (ES2022, Node16 modules)

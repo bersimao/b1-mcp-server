@@ -239,6 +239,35 @@ export class DbAdapter {
   }
 
   /**
+   * Generic SQL execution method.
+   *
+   * Handles any SQL statement (SELECT, UPDATE, INSERT, DELETE, anonymous blocks).
+   * If params are provided, uses parameter binding via DirectDb.
+   * Otherwise, sends the query as plain text.
+   *
+   * Used by the unified execute_sql and execute_sql_ai tools.
+   */
+  async executeSql(query: string, params?: FieldValue[]): Promise<QueryResult> {
+    this.ensureInitialised();
+    const start = Date.now();
+
+    try {
+      const data = await this.directDb.executeQuery(
+        query,
+        params && params.length > 0 ? params : undefined,
+      );
+
+      return {
+        data,
+        rowCount: Array.isArray(data) ? data.length : (typeof data === 'number' ? data : 0),
+        durationMs: Date.now() - start,
+      };
+    } catch (err) {
+      throw this.wrapError(err, 'executeSql');
+    }
+  }
+
+  /**
    * Calls a stored procedure via DirectDb.executeProcedure().
    *
    * IMPORTANT: sps-sap-interface takes an ARRAY of positional parameters,
