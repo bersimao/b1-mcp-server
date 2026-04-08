@@ -122,6 +122,29 @@ export class DbAdapter {
   getDbName(): string { return this.dbName; }
   getDbType(): DbType { return this.dbType; }
 
+  /**
+   * Runs a lightweight ping query to verify the DB connection is alive.
+   * Uses HANA's DUMMY table or MSSQL's GETDATE().
+   */
+  async checkConnection(): Promise<{ connected: boolean; durationMs: number; error?: string }> {
+    this.ensureInitialised();
+    const query = this.dbType === 'hana'
+      ? 'SELECT CURRENT_DATE FROM DUMMY'
+      : 'SELECT GETDATE()';
+    const start = Date.now();
+
+    try {
+      await this.directDb.executeQuery(query, undefined);
+      return { connected: true, durationMs: Date.now() - start };
+    } catch (err) {
+      return {
+        connected: false,
+        durationMs: Date.now() - start,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   private ensureInitialised(): void {
     if (!this.initialised) {
       throw new Error('DbAdapter not initialised. Call init() before executing queries.');

@@ -24,6 +24,7 @@ import { registerInsertTool } from './tools/executeInsert.js';
 import { registerDeleteTool } from './tools/executeDelete.js';
 import { registerProcedureTool } from './tools/executeProcedure.js';
 import { registerSchemaTool } from './tools/schemaIntrospection.js';
+import { registerCheckConnectionTool } from './tools/checkConnection.js';
 
 /**
  * Creates, initialises, and returns the MCP server.
@@ -71,6 +72,7 @@ export async function createServer(directDb: DirectDbModule): Promise<McpServer>
   registerDeleteTool(server, adapter, logger, config, rateLimiter);
   registerProcedureTool(server, adapter, logger, config, inspectionCache, rateLimiter);
   registerSchemaTool(server, adapter, logger, config, rateLimiter);
+  registerCheckConnectionTool(server, adapter, logger, config, rateLimiter);
 
   logger.debug(
     `All tools registered. Connected to ${config.dbType}://${config.dbServer}/${config.dbName}`
