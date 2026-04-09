@@ -69,8 +69,8 @@ export interface QueryResult {
 
 export class DbAdapter {
   private readonly directDb: DirectDbModule;
-  private readonly dbName: string;
-  private readonly dbType: DbType;
+  private dbName: string;
+  private dbType: DbType;
   private initialised = false;
 
   constructor(directDb: DirectDbModule) {
@@ -80,12 +80,10 @@ export class DbAdapter {
   }
 
   /**
-   * Initialises the DB connection via DirectDb.init().
-   * Must be called once at startup.
+   * Initialises (or re-initialises) the DB connection via DirectDb.init().
    *
-   * The init() returns a client object. We don't store it because
-   * DirectDb methods are called as static methods on the module itself.
-   * We only re-call init() if the connection is lost.
+   * Can be called multiple times to switch between databases.
+   * DirectDb.init() replaces the current connection internally.
    */
   async init(config: {
     server: string;
@@ -104,9 +102,8 @@ export class DbAdapter {
       password: config.password,
     });
 
-    // Store connection info (cast away readonly for init)
-    (this as any).dbName = config.database;
-    (this as any).dbType = config.dbType;
+    this.dbName = config.database;
+    this.dbType = config.dbType;
     this.initialised = true;
 
     console.error(`[adapter] Connected to ${config.dbType}://${config.server}/${config.database}`);
@@ -114,6 +111,7 @@ export class DbAdapter {
 
   getDbName(): string { return this.dbName; }
   getDbType(): DbType { return this.dbType; }
+  isConnected(): boolean { return this.initialised; }
 
   /**
    * Runs a lightweight ping query to verify the DB connection is alive.
@@ -140,7 +138,7 @@ export class DbAdapter {
 
   private ensureInitialised(): void {
     if (!this.initialised) {
-      throw new Error('DbAdapter not initialised. Call init() before executing queries.');
+      throw new Error('No database connected. Use the connect_database tool to connect to a database first.');
     }
   }
 

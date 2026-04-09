@@ -15,14 +15,16 @@ export function registerProcedureTool(
   server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config,
   inspectionCache: ProcedureInspectionCache, rateLimiter: RateLimiter,
 ): void {
-  const dbName = adapter.getDbName();
-  const dbType = adapter.getDbType();
+  const dbName = () => adapter.getDbName() || '(not connected)';
+  const dbType = () => adapter.getDbType();
 
   server.tool(
     'execute_procedure',
-    `Call a stored procedure on "${dbName}" (${dbType}).
+    `Call a stored procedure on the currently connected database.
 Parameters are safely handled via parameterised bindings.
-The procedure's source code is inspected before execution.`,
+The procedure's source code is inspected before execution.
+
+IMPORTANT: Before calling this tool, you MUST confirm which database the user intends to query. If the user has not explicitly stated the target database in their message, ASK them first. Do NOT assume the currently connected database is the intended target.`,
     {
       procedure: z.string().describe('Stored procedure name'),
       parameters: z.array(z.any()).optional().describe('Positional parameter values for the procedure (in order)'),
@@ -42,39 +44,39 @@ The procedure's source code is inspected before execution.`,
         procSource = await adapter.fetchProcedureSource(procedure);
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        logger.log(logger.createEntry({ tool: 'execute_procedure', database: dbName, dbType, operation: OperationType.EXEC, tables: [], query: `CALL/EXEC ${procedure}`, decision: 'DENY', reason: `Failed to fetch procedure source: ${errorMsg}`, rule: 'procedureInspection' }));
-        return { content: [{ type: 'text' as const, text: `Cannot verify procedure "${procedure}": failed to fetch source code. Execution blocked.` }], isError: true };
+        logger.log(logger.createEntry({ tool: 'execute_procedure', database: dbName(), dbType: dbType(), operation: OperationType.EXEC, tables: [], query: `CALL/EXEC ${procedure}`, decision: 'DENY', reason: `Failed to fetch procedure source: ${errorMsg}`, rule: 'procedureInspection' }));
+        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Cannot verify procedure "${procedure}": failed to fetch source code. Execution blocked.` }], isError: true };
       }
 
       // Step 2: Inspect body
       if (!procSource) {
-        logger.log(logger.createEntry({ tool: 'execute_procedure', database: dbName, dbType, operation: OperationType.EXEC, tables: [], query: `CALL/EXEC ${procedure}`, decision: 'DENY', reason: `Procedure "${procedure}" not found or source is empty.`, rule: 'procedureInspection' }));
-        return { content: [{ type: 'text' as const, text: `Procedure "${procedure}" not found or source code is not accessible. Execution blocked.` }], isError: true };
+        logger.log(logger.createEntry({ tool: 'execute_procedure', database: dbName(), dbType: dbType(), operation: OperationType.EXEC, tables: [], query: `CALL/EXEC ${procedure}`, decision: 'DENY', reason: `Procedure "${procedure}" not found or source is empty.`, rule: 'procedureInspection' }));
+        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Procedure "${procedure}" not found or source code is not accessible. Execution blocked.` }], isError: true };
       }
 
       const inspection = inspectionCache.inspect(procSource, procedure);
       if (!inspection.allowed) {
-        logger.log(logger.createEntry({ tool: 'execute_procedure', database: dbName, dbType, operation: OperationType.EXEC, tables: [], query: `CALL/EXEC ${procedure}`, decision: 'DENY', reason: inspection.reason, rule: 'procedureInspection' }));
-        return { content: [{ type: 'text' as const, text: `Procedure blocked:\n${inspection.reason}` }], isError: true };
+        logger.log(logger.createEntry({ tool: 'execute_procedure', database: dbName(), dbType: dbType(), operation: OperationType.EXEC, tables: [], query: `CALL/EXEC ${procedure}`, decision: 'DENY', reason: inspection.reason, rule: 'procedureInspection' }));
+        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Procedure blocked:\n${inspection.reason}` }], isError: true };
       }
 
       // Step 3: Audit
-      const auditEntry = logger.createEntry({ tool: 'execute_procedure', database: dbName, dbType, operation: OperationType.EXEC, tables: [], query: `CALL/EXEC ${procedure}(${params.map((_, i) => `?`).join(', ')})`, decision: 'ALLOW', reason: `Procedure "${procedure}" passed inspection.`, rule: 'procedureInspection' });
+      const auditEntry = logger.createEntry({ tool: 'execute_procedure', database: dbName(), dbType: dbType(), operation: OperationType.EXEC, tables: [], query: `CALL/EXEC ${procedure}(${params.map((_, i) => `?`).join(', ')})`, decision: 'ALLOW', reason: `Procedure "${procedure}" passed inspection.`, rule: 'procedureInspection' });
       logger.log(auditEntry);
 
       // Step 4: Execute (or dry-run)
       if (config.dryRun) {
-        return { content: [{ type: 'text' as const, text: `[DRY RUN] Procedure "${procedure}" validated and ALLOWED.\nInspection: ${inspection.reason}` }] };
+        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] [DRY RUN] Procedure "${procedure}" validated and ALLOWED.\nInspection: ${inspection.reason}` }] };
       }
 
       try {
         const result = await adapter.executeProcedure(procedure, params);
         auditEntry.durationMs = result.durationMs;
-        return { content: [{ type: 'text' as const, text: `Procedure executed successfully.\n${JSON.stringify(result.data, null, 2)}` }] };
+        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Procedure executed successfully.\n${JSON.stringify(result.data, null, 2)}` }] };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         auditEntry.error = errorMsg; logger.log(auditEntry);
-        return { content: [{ type: 'text' as const, text: `Procedure execution failed: ${errorMsg}` }], isError: true };
+        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Procedure execution failed: ${errorMsg}` }], isError: true };
       }
     },
   );

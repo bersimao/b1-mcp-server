@@ -10,20 +10,23 @@
 import { DbType } from '../types/index.js';
 
 export interface Config {
-  /** Database engine: hana or mssql. */
-  dbType: DbType;
+  /** Database engine: hana or mssql. Optional — set when connecting via profile. */
+  dbType?: DbType;
 
-  /** Database server hostname or IP. */
-  dbServer: string;
+  /** Database server hostname or IP. Optional — set when connecting via profile. */
+  dbServer?: string;
 
-  /** Target database name. */
-  dbName: string;
+  /** Target database name. Optional — set when connecting via profile. */
+  dbName?: string;
 
-  /** Database user. */
-  dbUser: string;
+  /** Database user. Optional — set when connecting via profile. */
+  dbUser?: string;
 
-  /** Database password. */
-  dbPassword: string;
+  /** Database password. Optional — set when connecting via profile. */
+  dbPassword?: string;
+
+  /** Path to the connections.json file (defaults to ~/.claude/connections.json). */
+  connectionsFile: string;
 
   /** Maximum allowed SQL query length in characters. */
   maxQueryLength: number;
@@ -51,24 +54,20 @@ export interface Config {
 }
 
 export function loadConfig(): Config {
-  const dbType = (process.env.MCP_DB_TYPE as DbType);
-  const dbServer = process.env.MCP_DB_SERVER;
-  const dbName = process.env.MCP_DB_NAME;
-  const dbUser = process.env.MCP_DB_USR;
-  const dbPassword = process.env.MCP_DB_PWD;
+  const dbType = (process.env.MCP_DB_TYPE as DbType) || undefined;
+  const dbServer = process.env.MCP_DB_SERVER || undefined;
+  const dbName = process.env.MCP_DB_NAME || undefined;
+  const dbUser = process.env.MCP_DB_USR || undefined;
+  const dbPassword = process.env.MCP_DB_PWD || undefined;
 
-  if (!dbType || !dbServer || !dbName || !dbUser || !dbPassword) {
-    console.error(
-      '[config] Missing required environment variables.\n' +
-      'Required: MCP_DB_TYPE, MCP_DB_SERVER, MCP_DB_NAME, MCP_DB_USR, MCP_DB_PWD'
-    );
-    process.exit(1);
-  }
-
-  if (dbType !== 'hana' && dbType !== 'mssql') {
+  // DB env vars are now optional — connection can be established later via connect_database tool
+  if (dbType && dbType !== 'hana' && dbType !== 'mssql') {
     console.error(`[config] Invalid MCP_DB_TYPE "${dbType}". Must be "hana" or "mssql".`);
     process.exit(1);
   }
+
+  // Connections file: env var or default to ~/.claude/connections.json
+  const connectionsFile = process.env.MCP_CONNECTIONS_FILE || '';
 
   return {
     dbType,
@@ -76,6 +75,8 @@ export function loadConfig(): Config {
     dbName,
     dbUser,
     dbPassword,
+
+    connectionsFile,
 
     maxQueryLength: parseInt(process.env.MCP_MAX_QUERY_LENGTH || '8000', 10),
 

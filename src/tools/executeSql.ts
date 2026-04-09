@@ -29,14 +29,17 @@ function isAnonymousBlock(sql: string): boolean {
 export function registerSqlTool(
   server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config, rateLimiter: RateLimiter,
 ): void {
-  const dbName = adapter.getDbName();
-  const dbType = adapter.getDbType();
+  // Dynamic getters — values change when the active database connection switches
+  const dbName = () => adapter.getDbName() || '(not connected)';
+  const dbType = () => adapter.getDbType();
 
   server.tool(
     'execute_sql',
-    `Execute a raw SQL statement provided directly by the user against "${dbName}" (${dbType}).
+    `Execute a raw SQL statement provided directly by the user against the currently connected database.
 
 IMPORTANT: This tool is for user-provided SQL ONLY. Do NOT use this tool for AI-generated queries — use "execute_sql_ai" instead.
+
+IMPORTANT: Before calling this tool, you MUST confirm which database the user intends to query. If the user has not explicitly stated the target database in their message, ASK them first. Do NOT assume the currently connected database is the intended target.
 
 Supports all SQL operations: SELECT, UPDATE, INSERT, DELETE, and anonymous blocks (DO BEGIN...END for HANA, BEGIN...END for MSSQL).
 
@@ -64,7 +67,7 @@ Rules enforced server-side:
       // Input validation (null bytes, length, etc.)
       const inputCheck = validateInput(query);
       if (!inputCheck.safe) {
-        logger.log(logger.createEntry({ tool: 'execute_sql', database: dbName, dbType, operation: OperationType.OTHER, tables: [], query, decision: 'DENY', reason: inputCheck.reason!, rule: 'inputValidation' }));
+        logger.log(logger.createEntry({ tool: 'execute_sql', database: dbName(), dbType: dbType(), operation: OperationType.OTHER, tables: [], query, decision: 'DENY', reason: inputCheck.reason!, rule: 'inputValidation' }));
         return { content: [{ type: 'text' as const, text: `Query rejected: ${inputCheck.reason}` }], isError: true };
       }
 
@@ -73,7 +76,7 @@ Rules enforced server-side:
       if (isAnonymousBlock(query)) {
         // Lightweight check: just audit and execute
         const auditEntry = logger.createEntry({
-          tool: 'execute_sql', database: dbName, dbType,
+          tool: 'execute_sql', database: dbName(), dbType: dbType(),
           operation: OperationType.OTHER, tables: [],
           query, decision: 'ALLOW',
           reason: 'Anonymous block — validated by AI pre-check.',
@@ -82,21 +85,21 @@ Rules enforced server-side:
         logger.log(auditEntry);
 
         if (config.dryRun) {
-          return { content: [{ type: 'text' as const, text: `[DRY RUN] Anonymous block validated and ALLOWED.\nSQL: ${query}` }] };
+          return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] [DRY RUN] Anonymous block validated and ALLOWED.\nSQL: ${query}` }] };
         }
 
         try {
           const result = await adapter.executeSql(query);
           auditEntry.durationMs = result.durationMs;
           const output = result.data != null
-            ? `${result.rowCount} row(s) returned/affected.\n${JSON.stringify(result.data, null, 2)}`
-            : `Executed successfully. ${result.rowCount} row(s) affected.`;
+            ? `[DB: ${dbName()}] ${result.rowCount} row(s) returned/affected.\n${JSON.stringify(result.data, null, 2)}`
+            : `[DB: ${dbName()}] Executed successfully. ${result.rowCount} row(s) affected.`;
           return { content: [{ type: 'text' as const, text: output }] };
         } catch (err) {
           const errorMsg = err instanceof Error ? err.message : String(err);
           auditEntry.error = errorMsg;
           logger.log(auditEntry);
-          return { content: [{ type: 'text' as const, text: `Execution failed: ${errorMsg}` }], isError: true };
+          return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Execution failed: ${errorMsg}` }], isError: true };
         }
       }
 
@@ -104,28 +107,28 @@ Rules enforced server-side:
       const guardrail = validateAnySql(query);
 
       if (!guardrail.allowed) {
-        logger.log(logger.createEntry({ tool: 'execute_sql', database: dbName, dbType, operation: guardrail.parsed.operation, tables: guardrail.parsed.tables, query, decision: 'DENY', reason: guardrail.reason, rule: guardrail.rule }));
-        return { content: [{ type: 'text' as const, text: guardrail.reason }], isError: true };
+        logger.log(logger.createEntry({ tool: 'execute_sql', database: dbName(), dbType: dbType(), operation: guardrail.parsed.operation, tables: guardrail.parsed.tables, query, decision: 'DENY', reason: guardrail.reason, rule: guardrail.rule }));
+        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] ${guardrail.reason}` }], isError: true };
       }
 
       // Confirmation gate
       if (guardrail.requiresConfirmation && !confirmed) {
-        logger.log(logger.createEntry({ tool: 'execute_sql', database: dbName, dbType, operation: guardrail.parsed.operation, tables: guardrail.parsed.tables, query, decision: 'PENDING_CONFIRMATION', reason: guardrail.reason, rule: guardrail.rule }));
-        return { content: [{ type: 'text' as const, text: guardrail.confirmationMessage! + '\n\nTo proceed, call this tool again with the same query and `confirmed: true`.' }] };
+        logger.log(logger.createEntry({ tool: 'execute_sql', database: dbName(), dbType: dbType(), operation: guardrail.parsed.operation, tables: guardrail.parsed.tables, query, decision: 'PENDING_CONFIRMATION', reason: guardrail.reason, rule: guardrail.rule }));
+        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] ${guardrail.confirmationMessage!}\n\nTo proceed, call this tool again with the same query and \`confirmed: true\`.` }] };
       }
 
       // Additional sanitisation for UPDATE statements (4-layer defence)
       if (guardrail.parsed.operation === OperationType.UPDATE) {
         const sanitisation = sanitiseUpdate(query);
         if (!sanitisation.safe) {
-          logger.log(logger.createEntry({ tool: 'execute_sql', database: dbName, dbType, operation: OperationType.UPDATE, tables: guardrail.parsed.tables, query, decision: 'DENY', reason: sanitisation.reason!, rule: 'updateSanitiser' }));
-          return { content: [{ type: 'text' as const, text: `Update sanitisation failed: ${sanitisation.reason}` }], isError: true };
+          logger.log(logger.createEntry({ tool: 'execute_sql', database: dbName(), dbType: dbType(), operation: OperationType.UPDATE, tables: guardrail.parsed.tables, query, decision: 'DENY', reason: sanitisation.reason!, rule: 'updateSanitiser' }));
+          return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Update sanitisation failed: ${sanitisation.reason}` }], isError: true };
         }
       }
 
       // Audit and execute
       const auditEntry = logger.createEntry({
-        tool: 'execute_sql', database: dbName, dbType,
+        tool: 'execute_sql', database: dbName(), dbType: dbType(),
         operation: guardrail.parsed.operation,
         tables: guardrail.parsed.tables,
         query, decision: 'ALLOW',
@@ -134,7 +137,7 @@ Rules enforced server-side:
       logger.log(auditEntry);
 
       if (config.dryRun) {
-        return { content: [{ type: 'text' as const, text: `[DRY RUN] Query validated and ALLOWED.\nOperation: ${guardrail.parsed.operation}\nTables: ${guardrail.parsed.tables.join(', ') || '(none detected)'}\nSQL: ${query}` }] };
+        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] [DRY RUN] Query validated and ALLOWED.\nOperation: ${guardrail.parsed.operation}\nTables: ${guardrail.parsed.tables.join(', ') || '(none detected)'}\nSQL: ${query}` }] };
       }
 
       try {
@@ -142,14 +145,14 @@ Rules enforced server-side:
         auditEntry.durationMs = result.durationMs;
 
         if (guardrail.parsed.operation === OperationType.SELECT) {
-          return { content: [{ type: 'text' as const, text: `${result.rowCount} row(s) returned.\n${JSON.stringify(result.data, null, 2)}` }] };
+          return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] ${result.rowCount} row(s) returned.\n${JSON.stringify(result.data, null, 2)}` }] };
         }
-        return { content: [{ type: 'text' as const, text: `Executed successfully. ${result.rowCount} row(s) affected.` }] };
+        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Executed successfully. ${result.rowCount} row(s) affected.` }] };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         auditEntry.error = errorMsg;
         logger.log(auditEntry);
-        return { content: [{ type: 'text' as const, text: `Execution failed: ${errorMsg}` }], isError: true };
+        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Execution failed: ${errorMsg}` }], isError: true };
       }
     },
   );
