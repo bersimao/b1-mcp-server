@@ -30,6 +30,46 @@ function formatCapabilities(p: ConnectionProfile): string {
   return caps.join('+') || 'none';
 }
 
+// ---------------------------------------------------------------------------
+// Failed connection attempt tracker
+// SAP B1 locks user accounts after repeated failed login attempts.
+// We track failures per profile+side to warn before a lockout occurs.
+// ---------------------------------------------------------------------------
+
+const SAP_LOCKOUT_WARNING_THRESHOLD = 3;
+
+interface FailedAttempts {
+  db: number;
+  sl: number;
+}
+
+const failedAttemptsMap = new Map<string, FailedAttempts>();
+
+function getFailedAttempts(profileId: string): FailedAttempts {
+  if (!failedAttemptsMap.has(profileId)) {
+    failedAttemptsMap.set(profileId, { db: 0, sl: 0 });
+  }
+  return failedAttemptsMap.get(profileId)!;
+}
+
+function recordFailure(profileId: string, side: 'db' | 'sl'): number {
+  const attempts = getFailedAttempts(profileId);
+  attempts[side]++;
+  return attempts[side];
+}
+
+function resetFailures(profileId: string, side: 'db' | 'sl'): void {
+  const attempts = getFailedAttempts(profileId);
+  attempts[side] = 0;
+}
+
+function formatLockoutWarning(profileId: string, side: string, count: number): string {
+  if (count >= SAP_LOCKOUT_WARNING_THRESHOLD) {
+    return `\n⚠️  WARNING: ${count} consecutive failed ${side} login attempts for "${profileId}". SAP B1 may lock this user account after repeated failures. Please verify the credentials before retrying.`;
+  }
+  return '';
+}
+
 export function registerConnectDatabaseTool(
   server: McpServer,
   adapter: DbAdapter,
@@ -47,10 +87,12 @@ export function registerConnectDatabaseTool(
   server.tool(
     'connect_database',
     `Switch the active database and Service Layer connection to a different SAP Business One environment.
-Searches connection profiles by ID, database name, or display name (case-insensitive, partial match supported).
+Searches connection profiles by ID or database name (case-insensitive, partial match supported).
 
 Each profile can include DirectDb (DB) credentials, Service Layer (SL) credentials, or both.
-Both connections are established in one step. If one fails, the other still connects.
+When switching environments, both previous connections are always disconnected first to prevent cross-environment operations.
+If only one side connects successfully, it remains active — retry the failed side after fixing credentials.
+Tracks failed login attempts per profile and warns about SAP B1 account lockout risk.
 
 Available profiles:
 ${profileList}
@@ -58,7 +100,7 @@ ${profileList}
 Use "list" as the query to reload and list all available profiles.`,
     {
       query: z.string().describe(
-        'The database identifier to connect to. Can be the profile ID, database name, or display name. Use "list" to see all available profiles.'
+        'The database identifier to connect to. Can be the profile ID or database name. Use "list" to see all available profiles.'
       ),
     },
     async ({ query }) => {
@@ -115,67 +157,106 @@ Use "list" as the query to reload and list all available profiles.`,
         };
       }
 
-      // --- Connect DirectDb ---
-      let dbConnected = false;
+      // --- Determine what needs (re)connecting ---
+      // When switching to a different environment, BOTH previous connections
+      // must be ended first so we never have DB on one env and SL on another.
+      // When retrying a failed side on the SAME profile, only connect that side.
+      const hasDb = hasDbCredentials(profile);
+      const hasSl = hasSlCredentials(profile);
+
+      const dbAlreadyOnTarget = adapter.isConnected() && adapter.getDbName() === profile.dbName;
+      const slAlreadyOnTarget = slAdapter.isConnected() && slAdapter.getDbName() === profile.dbName;
+
+      // Both already connected to the target — nothing to do
+      if (dbAlreadyOnTarget && slAlreadyOnTarget) {
+        return {
+          content: [{ type: 'text' as const, text: `Already connected to "${profile.id}" (${profile.dbName}). No changes made.` }],
+        };
+      }
+
+      // Switching to a different environment — disconnect both first
+      const isSameTarget =
+        (!adapter.isConnected() || adapter.getDbName() === profile.dbName) &&
+        (!slAdapter.isConnected() || slAdapter.getDbName() === profile.dbName);
+
+      if (!isSameTarget) {
+        const previousDbName = adapter.getDbName() || slAdapter.getDbName();
+        adapter.disconnect();
+        slAdapter.disconnect();
+        console.error(`[connect] Switched away from "${previousDbName}" — both connections ended.`);
+      }
+
+      // --- Connect DirectDb (skip if already on target) ---
+      let dbConnected = dbAlreadyOnTarget;
       let dbError: string | undefined;
       let dbPingMs: number | undefined;
 
-      if (hasDbCredentials(profile)) {
-        // Skip if already connected to this database via DirectDb
-        if (adapter.isConnected() && adapter.getDbName() === profile.dbName) {
-          dbConnected = true;
-        } else {
-          try {
-            await adapter.init({
-              server: profile.dbServer,
-              database: profile.dbName,
-              dbType: profile.dbType,
-              username: profile.dbUser,
-              password: profile.dbPassword,
-            });
-            const check = await adapter.checkConnection();
-            dbConnected = check.connected;
-            dbPingMs = check.durationMs;
-            if (!check.connected) dbError = check.error;
-          } catch (err) {
-            dbError = err instanceof Error ? err.message : String(err);
+      if (hasDb && !dbAlreadyOnTarget) {
+        try {
+          await adapter.init({
+            server: profile.dbServer,
+            database: profile.dbName,
+            dbType: profile.dbType,
+            username: profile.dbUser,
+            password: profile.dbPassword,
+          });
+          const check = await adapter.checkConnection();
+          dbConnected = check.connected;
+          dbPingMs = check.durationMs;
+          if (!check.connected) {
+            dbError = check.error;
+            adapter.disconnect();
           }
+        } catch (err) {
+          dbError = err instanceof Error ? err.message : String(err);
+          adapter.disconnect();
+        }
+
+        if (dbConnected) {
+          resetFailures(profile.id, 'db');
+        } else {
+          recordFailure(profile.id, 'db');
         }
       }
 
-      // --- Connect Service Layer ---
-      let slConnected = false;
+      // --- Connect Service Layer (skip if already on target) ---
+      let slConnected = slAlreadyOnTarget;
       let slError: string | undefined;
       let slPingMs: number | undefined;
 
-      if (hasSlCredentials(profile)) {
-        // Skip if already connected to this database via SL
-        if (slAdapter.isConnected() && slAdapter.getDbName() === profile.dbName) {
-          slConnected = true;
-        } else {
-          try {
-            await slAdapter.init({
-              database: profile.dbName,
-              username: profile.slUser!,
-              password: profile.slPassword || '',
-              url: profile.slUrl!,
-            });
-            const check = await slAdapter.checkConnection();
-            slConnected = check.connected;
-            slPingMs = check.durationMs;
-            if (!check.connected) slError = check.error;
-          } catch (err) {
-            slError = err instanceof Error ? err.message : String(err);
+      if (hasSl && !slAlreadyOnTarget) {
+        try {
+          await slAdapter.init({
+            database: profile.dbName,
+            username: profile.slUser!,
+            password: profile.slPassword || '',
+            url: profile.slUrl!,
+          });
+          const check = await slAdapter.checkConnection();
+          slConnected = check.connected;
+          slPingMs = check.durationMs;
+          if (!check.connected) {
+            slError = check.error;
+            slAdapter.disconnect();
           }
+        } catch (err) {
+          slError = err instanceof Error ? err.message : String(err);
+          slAdapter.disconnect();
+        }
+
+        if (slConnected) {
+          resetFailures(profile.id, 'sl');
+        } else {
+          recordFailure(profile.id, 'sl');
         }
       }
 
       // --- Build response ---
       const lines: string[] = [];
-      lines.push(`Profile: "${profile.name}" (${profile.dbName})`);
+      lines.push(`Profile: "${profile.id}" (${profile.dbName})`);
       lines.push('');
 
-      if (hasDbCredentials(profile)) {
+      if (hasDb) {
         if (dbConnected) {
           lines.push(`DirectDb: Connected (${profile.dbType})${dbPingMs != null ? ` — ${dbPingMs}ms` : ''}`);
         } else {
@@ -185,7 +266,7 @@ Use "list" as the query to reload and list all available profiles.`,
         lines.push('DirectDb: Not configured (no dbServer/dbUser in profile)');
       }
 
-      if (hasSlCredentials(profile)) {
+      if (hasSl) {
         if (slConnected) {
           lines.push(`ServiceLayer: Connected via ${profile.slUrl}${slPingMs != null ? ` — ${slPingMs}ms` : ''}`);
         } else {
@@ -195,6 +276,13 @@ Use "list" as the query to reload and list all available profiles.`,
         lines.push('ServiceLayer: Not configured (no slUrl/slUser in profile)');
       }
 
+      // Append lockout warnings if thresholds are reached
+      const attempts = getFailedAttempts(profile.id);
+      const dbLockoutWarn = formatLockoutWarning(profile.id, 'DirectDb', attempts.db);
+      const slLockoutWarn = formatLockoutWarning(profile.id, 'ServiceLayer', attempts.sl);
+      if (dbLockoutWarn) lines.push(dbLockoutWarn);
+      if (slLockoutWarn) lines.push(slLockoutWarn);
+
       // Audit
       const auditEntry = logger.createEntry({
         tool: 'connect_database',
@@ -203,7 +291,7 @@ Use "list" as the query to reload and list all available profiles.`,
         operation: OperationType.OTHER,
         tables: [],
         query: `CONNECT TO ${profile.dbName}`,
-        decision: 'ALLOW',
+        decision: dbConnected || slConnected ? 'ALLOW' : 'DENY',
         reason: `DB: ${dbConnected ? 'OK' : dbError || 'not configured'}, SL: ${slConnected ? 'OK' : slError || 'not configured'}`,
         rule: 'connectDatabase',
       });

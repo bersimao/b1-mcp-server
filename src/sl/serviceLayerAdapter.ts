@@ -116,6 +116,18 @@ export class ServiceLayerAdapter {
   isConnected(): boolean { return this.initialised; }
 
   /**
+   * Disconnects and resets internal state.
+   * After calling this, isConnected() returns false and all operations will fail
+   * until init() is called again.
+   */
+  disconnect(): void {
+    this.initialised = false;
+    this.dbName = '';
+    this.slUrl = '';
+    console.error('[sl-adapter] Disconnected from Service Layer.');
+  }
+
+  /**
    * Pings the Service Layer to verify the connection is alive.
    * Uses a lightweight GET request to /Branches (same pattern as Conns.js checkSL).
    */

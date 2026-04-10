@@ -9,7 +9,6 @@
 //   [
 //     {
 //       "id": "unique_id",
-//       "name": "Human-readable name",
 //       "dbType": "hana" | "mssql",
 //       "dbServer": "host:port",
 //       "dbName": "SBO_DATABASE",
@@ -34,7 +33,6 @@ import { DbType } from '../types/index.js';
 
 export interface ConnectionProfile {
   id: string;
-  name: string;
   dbType: DbType;
   dbServer: string;
   dbName: string;
@@ -80,16 +78,15 @@ export class ConnectionManager {
       this.profiles = parsed
         .filter((p: any) => p.id && p.dbType && p.dbName)
         .map((p: any) => ({
-          id: String(p.id),
-          name: String(p.name || p.dbName),
-          dbType: p.dbType === 'mssql' ? 'mssql' as DbType : 'hana' as DbType,
-          dbServer: String(p.dbServer || ''),
-          dbName: String(p.dbName),
-          dbUser: String(p.dbUser || ''),
-          dbPassword: String(p.dbPassword || ''),
-          slUrl: p.slUrl ? String(p.slUrl) : undefined,
-          slUser: p.slUser ? String(p.slUser) : undefined,
-          slPassword: p.slPassword ? String(p.slPassword) : undefined,
+          id: String(p.id).trim(),
+          dbType: String(p.dbType).trim().toLowerCase() === 'mssql' ? 'mssql' as DbType : 'hana' as DbType,
+          dbServer: String(p.dbServer || '').trim(),
+          dbName: String(p.dbName).trim(),
+          dbUser: String(p.dbUser || '').trim(),
+          dbPassword: String(p.dbPassword || '').trim(),
+          slUrl: p.slUrl ? String(p.slUrl).trim() : undefined,
+          slUser: p.slUser ? String(p.slUser).trim() : undefined,
+          slPassword: p.slPassword ? String(p.slPassword).trim() : undefined,
         }));
 
       this.loaded = true;
@@ -107,7 +104,7 @@ export class ConnectionManager {
 
   /**
    * Finds a connection profile by ID, database name, or partial match.
-   * Search is case-insensitive.
+   * Search is case-insensitive. Tries exact ID → exact dbName → partial match.
    */
   find(query: string): ConnectionProfile | undefined {
     if (!this.loaded) this.load();
@@ -122,15 +119,10 @@ export class ConnectionManager {
     const byDbName = this.profiles.find(p => p.dbName.toLowerCase() === q);
     if (byDbName) return byDbName;
 
-    // Exact match on name
-    const byName = this.profiles.find(p => p.name.toLowerCase() === q);
-    if (byName) return byName;
-
-    // Partial match (id, dbName, or name contains query)
+    // Partial match (id or dbName contains query)
     const partial = this.profiles.find(p =>
       p.id.toLowerCase().includes(q) ||
-      p.dbName.toLowerCase().includes(q) ||
-      p.name.toLowerCase().includes(q)
+      p.dbName.toLowerCase().includes(q)
     );
     return partial;
   }

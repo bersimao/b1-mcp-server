@@ -114,6 +114,18 @@ export class DbAdapter {
   isConnected(): boolean { return this.initialised; }
 
   /**
+   * Disconnects and resets internal state.
+   * After calling this, isConnected() returns false and all operations will fail
+   * until init() is called again.
+   */
+  disconnect(): void {
+    this.initialised = false;
+    this.dbName = '';
+    this.dbType = 'hana';
+    console.error('[adapter] Disconnected from database.');
+  }
+
+  /**
    * Runs a lightweight ping query to verify the DB connection is alive.
    * Uses HANA's DUMMY table or MSSQL's GETDATE().
    */

@@ -54,15 +54,16 @@ export interface Config {
 }
 
 export function loadConfig(): Config {
-  const dbType = (process.env.MCP_DB_TYPE as DbType) || undefined;
+  const rawDbType = process.env.MCP_DB_TYPE?.toLowerCase();
+  const dbType: DbType | undefined = rawDbType === 'mssql' ? 'mssql' : rawDbType === 'hana' ? 'hana' : rawDbType ? undefined : undefined;
   const dbServer = process.env.MCP_DB_SERVER || undefined;
   const dbName = process.env.MCP_DB_NAME || undefined;
   const dbUser = process.env.MCP_DB_USR || undefined;
   const dbPassword = process.env.MCP_DB_PWD || undefined;
 
   // DB env vars are now optional — connection can be established later via connect_database tool
-  if (dbType && dbType !== 'hana' && dbType !== 'mssql') {
-    console.error(`[config] Invalid MCP_DB_TYPE "${dbType}". Must be "hana" or "mssql".`);
+  if (rawDbType && rawDbType !== 'hana' && rawDbType !== 'mssql') {
+    console.error(`[config] Invalid MCP_DB_TYPE "${rawDbType}". Must be "hana" or "mssql".`);
     process.exit(1);
   }
 

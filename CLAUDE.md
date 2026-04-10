@@ -8,7 +8,7 @@ A custom MCP server (`sps-mcp-server`) for Claude Code that provides secure, gua
 
 ### Connection Model
 - **Multi-database support:** Connection profiles are stored in `~/.claude/connections.json`. The AI uses the `connect_database` tool to switch between databases at runtime.
-- **Dual connection:** Each profile can include DirectDb (DB) and Service Layer (SL) credentials. Both are connected in one step. If one fails, the other still connects (partial success).
+- **Safe dual connection:** Each profile can include DirectDb (DB) and Service Layer (SL) credentials. When switching environments, both previous connections are always ended first to prevent cross-environment operations. If one side fails on the new target, the other remains active for use. Retrying the same profile only reconnects the failed side. Failed login attempts are tracked per profile to warn about SAP B1 account lockout.
 - **No connection at startup (default):** The server starts without connections. The AI must call `connect_database` before executing queries.
 - **Legacy mode:** If `MCP_DB_*` env vars are set, the server connects DirectDb at startup automatically.
 - `sps-sap-interface` provides `DirectDb` and `ServiceLayer` singletons.
@@ -19,7 +19,7 @@ A custom MCP server (`sps-mcp-server`) for Claude Code that provides secure, gua
 - **Parameter binding (`?`) works for SELECT and INSERT but NOT for UPDATE.** UPDATEs are passed as plain text.
 
 ### 7 MCP Tools
-1. **`connect_database`** — Switch active DirectDb + Service Layer connection. Loads profiles from `~/.claude/connections.json`. Connects both DB and SL in one step. Supports search by ID, database name, or display name. Use `"list"` to see all profiles.
+1. **`connect_database`** — Switch active DirectDb + Service Layer connection. Loads profiles from `~/.claude/connections.json`. Connects both DB and SL in one step. Supports search by ID or database name. Use `"list"` to see all profiles.
 2. **`execute_sql`** — User-provided raw SQL. Supports any operation (SELECT, UPDATE, INSERT, DELETE, DO BEGIN...END blocks). Server-side guardrails for simple statements; AI pre-validates complex anonymous blocks via tool description instructions.
 3. **`execute_sql_ai`** — AI-generated SQL with **mandatory parameterised placeholders** (?). Server rejects queries where placeholder count doesn't match parameters array length. Same guardrails as execute_sql. Supports all operation types.
 4. **`execute_procedure`** — Inspects SP source code before execution via `ProcedureInspectionCache`.
@@ -115,8 +115,9 @@ tests/                        — Mirrors src/ structure, uses vitest
 - **Phase 5 (tool consolidation)**: Complete. Consolidated 4 operation-specific tools into 2 unified tools.
 - **Phase 6 (multi-database connections)**: Complete. Dynamic connection switching via profiles.
 - **Phase 7 (Service Layer support)**: Complete. Added `execute_service_layer` tool and `ServiceLayerAdapter`:
-  - Dual connection: DirectDb + Service Layer connected in one step from same profile
-  - Partial success: if one fails, the other still connects
+  - Safe dual connection: when switching environments, both previous connections are ended first
+  - Partial success allowed: if one side fails, the other stays active (both target same DB)
+  - Failed login tracking: warns about SAP B1 account lockout after repeated failures
   - Connection profiles extended with optional `slUrl`, `slUser`, `slPassword` fields
   - Generic `execute_service_layer` tool for GET/POST/PATCH/DELETE OData requests
   - `check_connection` reports both DirectDb and Service Layer status independently
@@ -131,7 +132,7 @@ tests/                        — Mirrors src/ structure, uses vitest
 7. **HANA uses CALL, MSSQL uses EXEC/EXECUTE.** Both are detected and blocked in raw SQL.
 8. **{db} placeholder** in all queries for DirectDb schema resolution.
 9. **Multi-database via profiles.** Connection profiles in `~/.claude/connections.json` allow switching between databases at runtime via `connect_database` tool. Server starts unconnected by default — tools return helpful error messages until a connection is established.
-10. **Dual connection per profile.** Each profile can include DirectDb and Service Layer credentials. Both are connected in one step. Partial success is supported — if DB connects but SL fails (or vice versa), the working connection is kept.
+10. **Safe dual connection per profile.** Each profile can include DirectDb and Service Layer credentials. When switching environments, both previous connections are always ended first to prevent cross-environment operations. If one side fails on the new target, the other stays active. Retrying the same profile reconnects only the failed side. Failed login attempts are tracked per profile with SAP B1 lockout warnings.
 
 ## Tech Stack
 - Node.js + TypeScript (ES2022, Node16 modules)
