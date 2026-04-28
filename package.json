@@ -1,19 +1,48 @@
 {
   "name": "sps-mcp-server",
   "version": "1.0.0",
-  "description": "Secure MCP server for SAP B1 database operations via sps-sap-interface",
+  "description": "Secure MCP server for SAP Business One database and Service Layer operations via sps-sap-interface",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
     "sps-mcp-server": "./dist/index.js"
   },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "sap",
+    "sap-business-one",
+    "sap-b1",
+    "hana",
+    "mssql",
+    "service-layer",
+    "claude",
+    "claude-code"
+  ],
+  "license": "MIT",
+  "author": "Bernardo Simão",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bersimao/claude-mcp-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bersimao/claude-mcp-server/issues"
+  },
+  "homepage": "https://github.com/bersimao/claude-mcp-server#readme",
   "scripts": {
+    "prebuild": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "watch": "tsc --watch",
     "test": "node --experimental-vm-modules node_modules/.bin/vitest run",
-    "test:watch": "node --experimental-vm-modules node_modules/.bin/vitest"
+    "test:watch": "node --experimental-vm-modules node_modules/.bin/vitest",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

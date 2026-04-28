@@ -41,11 +41,7 @@ function createMockDirectDb(): DirectDbModule {
 
 function createTestConfig(overrides: Partial<Config> = {}): Config {
   return {
-    dbType: 'hana',
-    dbServer: 'test-server',
-    dbName: 'TEST_DB',
-    dbUser: 'test-user',
-    dbPassword: 'test-pass',
+    connectionsFile: '',
     maxQueryLength: 8000,
     auditLogPath: '',
     logLevel: 'error',
@@ -82,8 +78,8 @@ function captureToolHandlers(
   } as unknown as McpServer;
 
   // Init adapter manually (bypass actual DB connection)
-  (adapter as any).dbName = config.dbName;
-  (adapter as any).dbType = config.dbType;
+  (adapter as any).dbName = 'TEST_DB';
+  (adapter as any).dbType = 'hana';
   (adapter as any).initialised = true;
 
   registerSqlTool(fakeServer, adapter, logger, config, rateLimiter);

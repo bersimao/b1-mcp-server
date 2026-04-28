@@ -9,8 +9,7 @@ A custom MCP server (`sps-mcp-server`) for Claude Code that provides secure, gua
 ### Connection Model
 - **Multi-database support:** Connection profiles are stored in `~/.claude/connections.json`. The AI uses the `connect_database` tool to switch between databases at runtime.
 - **Safe dual connection:** Each profile can include DirectDb (DB) and Service Layer (SL) credentials. When switching environments, both previous connections are always ended first to prevent cross-environment operations. If one side fails on the new target, the other remains active for use. Retrying the same profile only reconnects the failed side. Failed login attempts are tracked per profile to warn about SAP B1 account lockout.
-- **No connection at startup (default):** The server starts without connections. The AI must call `connect_database` before executing queries.
-- **Legacy mode:** If `MCP_DB_*` env vars are set, the server connects DirectDb at startup automatically.
+- **No connection at startup:** The server always starts without connections. The AI must call `connect_database` before executing queries. There is no env-var fallback — credentials live exclusively in `~/.claude/connections.json`.
 - `sps-sap-interface` provides `DirectDb` and `ServiceLayer` singletons.
 - `DirectDb.init()` and `ServiceLayer.init()` can be called multiple times to switch connections.
 - `DirectDb.executeQuery(query, params?)` uses `{db}` placeholder for schema resolution and `?` for parameter binding.

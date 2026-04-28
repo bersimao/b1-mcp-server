@@ -1,29 +1,47 @@
 #!/usr/bin/env node
 // ============================================================================
-// Quick connection test — verifies DirectDb can reach the database.
-// Run: node --env-file=.env --loader ts-node/esm scripts/test-connection.ts
-//   or: npx tsx --env-file=.env scripts/test-connection.ts
-//   or after build: node --env-file=.env dist/scripts/test-connection.js
+// Quick connection test — verifies DirectDb can reach a database defined in
+// ~/.claude/connections.json.
+//
+// Run: npx tsx scripts/test-connection.ts <profile-id>
+//   or after build: node dist/scripts/test-connection.js <profile-id>
 // ============================================================================
+
+import { ConnectionManager } from '../src/config/connectionManager.js';
 
 async function main() {
   console.log('=== sps-mcp-server Connection Test ===\n');
 
-  // 1. Check env vars
-  const dbType = process.env.MCP_DB_TYPE;
-  const server = process.env.MCP_DB_SERVER;
-  const database = process.env.MCP_DB_NAME;
-  const username = process.env.MCP_DB_USR;
-  const password = process.env.MCP_DB_PWD;
+  // 1. Resolve profile from CLI arg
+  const profileId = process.argv[2];
+  if (!profileId) {
+    console.error('❌ Missing profile id.');
+    console.error('Usage: npx tsx scripts/test-connection.ts <profile-id>');
+    process.exit(1);
+  }
 
+  const manager = new ConnectionManager();
+  manager.load();
+  const profile = manager.find(profileId);
+
+  if (!profile) {
+    const available = manager.listAll().map(p => p.id).join(', ') || '(none)';
+    console.error(`❌ No profile matching "${profileId}" in ${manager.getFilePath()}`);
+    console.error(`   Available: ${available}`);
+    process.exit(1);
+  }
+
+  const { dbType, dbServer, dbName, dbUser, dbPassword } = profile;
+
+  console.log(`Profile:   ${profile.id}`);
   console.log(`DB Type:   ${dbType}`);
-  console.log(`Server:    ${server}`);
-  console.log(`Database:  ${database}`);
-  console.log(`User:      ${username}`);
-  console.log(`Password:  ${'*'.repeat(password?.length || 0)}\n`);
+  console.log(`Server:    ${dbServer}`);
+  console.log(`Database:  ${dbName}`);
+  console.log(`User:      ${dbUser}`);
+  console.log(`Password:  ${'*'.repeat(dbPassword.length)}\n`);
 
-  if (!dbType || !server || !database || !username || !password) {
-    console.error('❌ Missing required env vars. Check your .env file.');
+  if (!dbServer || !dbUser || !dbPassword) {
+    console.error('❌ Profile is missing dbServer / dbUser / dbPassword.');
     process.exit(1);
   }
 
@@ -32,7 +50,7 @@ async function main() {
   let DirectDb: any;
   try {
     const spsModule = await import('sps-sap-interface');
-    DirectDb = spsModule.DirectDb || spsModule.default?.DirectDb;
+    DirectDb = spsModule.DirectDb || (spsModule as any).default?.DirectDb;
     if (!DirectDb) throw new Error('DirectDb not found in exports');
     console.log('✅ sps-sap-interface loaded\n');
   } catch (err) {
@@ -42,10 +60,10 @@ async function main() {
 
   // 3. Init connection
   console.log('Connecting to database...');
-  const databaseType = dbType.toLowerCase() === 'hana' ? 'HANA' : 'SQL';
+  const databaseType = dbType === 'hana' ? 'HANA' : 'SQL';
 
   try {
-    await DirectDb.init({ server, database, databaseType, username, password });
+    await DirectDb.init({ server: dbServer, database: dbName, databaseType, username: dbUser, password: dbPassword });
     console.log('✅ DirectDb.init() succeeded\n');
   } catch (err) {
     console.error(`❌ DirectDb.init() failed: ${err instanceof Error ? err.message : err}`);
@@ -53,7 +71,7 @@ async function main() {
   }
 
   // 4. Ping query
-  const pingQuery = dbType.toLowerCase() === 'hana'
+  const pingQuery = dbType === 'hana'
     ? 'SELECT CURRENT_DATE FROM DUMMY'
     : 'SELECT GETDATE()';
 
@@ -72,14 +90,14 @@ async function main() {
   }
 
   // 5. Quick schema test
-  const schemaQuery = dbType.toLowerCase() === 'hana'
+  const schemaQuery = dbType === 'hana'
     ? 'SELECT COUNT(*) AS "TableCount" FROM "SYS"."TABLES" WHERE "SCHEMA_NAME" = CURRENT_SCHEMA'
-    : `SELECT COUNT(*) AS TableCount FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_CATALOG = '${database}'`;
+    : `SELECT COUNT(*) AS TableCount FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_CATALOG = '${dbName}'`;
 
   console.log(`Counting tables: ${schemaQuery}`);
   try {
     const result = await DirectDb.executeQuery(schemaQuery);
-    console.log(`✅ Found ${JSON.stringify(result)} tables in ${database}\n`);
+    console.log(`✅ Found ${JSON.stringify(result)} tables in ${dbName}\n`);
   } catch (err) {
     console.error(`⚠️  Schema query failed (non-fatal): ${err instanceof Error ? err.message : err}\n`);
   }

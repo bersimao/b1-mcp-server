@@ -6,9 +6,9 @@
 // Bootstraps the MCP server with stdio transport.
 //
 // Connection model:
-//   - Primary: Connection profiles loaded from ~/.claude/connections.json.
-//     The AI uses the connect_database tool to switch databases at runtime.
-//   - Fallback: If MCP_DB_* env vars are set, connects at startup (legacy).
+//   Connection profiles are loaded from ~/.claude/connections.json.
+//   The server starts unconnected; the AI uses the connect_database tool
+//   to pick a profile and connect both DirectDb and Service Layer at runtime.
 //
 // Claude Code configuration:
 //   {

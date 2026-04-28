@@ -7,24 +7,10 @@
 //
 // ============================================================================
 
-import { DbType } from '../types/index.js';
+import { resolve } from 'path';
+import { homedir } from 'os';
 
 export interface Config {
-  /** Database engine: hana or mssql. Optional — set when connecting via profile. */
-  dbType?: DbType;
-
-  /** Database server hostname or IP. Optional — set when connecting via profile. */
-  dbServer?: string;
-
-  /** Target database name. Optional — set when connecting via profile. */
-  dbName?: string;
-
-  /** Database user. Optional — set when connecting via profile. */
-  dbUser?: string;
-
-  /** Database password. Optional — set when connecting via profile. */
-  dbPassword?: string;
-
   /** Path to the connections.json file (defaults to ~/.claude/connections.json). */
   connectionsFile: string;
 
@@ -54,34 +40,15 @@ export interface Config {
 }
 
 export function loadConfig(): Config {
-  const rawDbType = process.env.MCP_DB_TYPE?.toLowerCase();
-  const dbType: DbType | undefined = rawDbType === 'mssql' ? 'mssql' : rawDbType === 'hana' ? 'hana' : rawDbType ? undefined : undefined;
-  const dbServer = process.env.MCP_DB_SERVER || undefined;
-  const dbName = process.env.MCP_DB_NAME || undefined;
-  const dbUser = process.env.MCP_DB_USR || undefined;
-  const dbPassword = process.env.MCP_DB_PWD || undefined;
-
-  // DB env vars are now optional — connection can be established later via connect_database tool
-  if (rawDbType && rawDbType !== 'hana' && rawDbType !== 'mssql') {
-    console.error(`[config] Invalid MCP_DB_TYPE "${rawDbType}". Must be "hana" or "mssql".`);
-    process.exit(1);
-  }
-
   // Connections file: env var or default to ~/.claude/connections.json
   const connectionsFile = process.env.MCP_CONNECTIONS_FILE || '';
 
   return {
-    dbType,
-    dbServer,
-    dbName,
-    dbUser,
-    dbPassword,
-
     connectionsFile,
 
     maxQueryLength: parseInt(process.env.MCP_MAX_QUERY_LENGTH || '8000', 10),
 
-    auditLogPath: process.env.MCP_AUDIT_LOG_PATH || './logs/audit.jsonl',
+    auditLogPath: process.env.MCP_AUDIT_LOG_PATH || resolve(homedir(), '.claude', 'logs', 'sps-mcp-audit.jsonl'),
 
     logLevel: (process.env.MCP_LOG_LEVEL as Config['logLevel']) || 'info',
 

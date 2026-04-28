@@ -8,8 +8,7 @@
 //   The server starts WITHOUT a database connection. The AI uses the
 //   connect_database tool to switch between databases loaded from
 //   ~/.claude/connections.json. Both DirectDb and Service Layer are
-//   connected in one step from the same profile. Alternatively, if
-//   MCP_DB_* env vars are set, the server connects at startup (legacy).
+//   connected in one step from the same profile.
 //
 // ============================================================================
 
@@ -50,17 +49,6 @@ export async function createServer(
   const connectionManager = new ConnectionManager(config.connectionsFile || undefined);
   connectionManager.load();
 
-  // If env vars provide a DB config, connect at startup (legacy/fallback mode)
-  if (config.dbType && config.dbServer && config.dbName && config.dbUser && config.dbPassword) {
-    await adapter.init({
-      server: config.dbServer,
-      database: config.dbName,
-      dbType: config.dbType,
-      username: config.dbUser,
-      password: config.dbPassword,
-    });
-  }
-
   const inspectionCache = new ProcedureInspectionCache({
     maxSize: config.procedureCacheMaxSize,
     ttlMs: config.procedureCacheTtlMs,
@@ -86,16 +74,10 @@ export async function createServer(
   registerServiceLayerTool(server, slAdapter, adapter, logger, config, rateLimiter);
   registerCheckConnectionTool(server, adapter, slAdapter, logger, config, rateLimiter);
 
-  if (adapter.isConnected()) {
-    logger.debug(
-      `All tools registered. Connected to ${adapter.getDbType()}://${config.dbServer}/${adapter.getDbName()}`
-    );
-  } else {
-    const profileCount = connectionManager.listAll().length;
-    logger.debug(
-      `All tools registered. No database connected. ${profileCount} profile(s) available — use connect_database tool.`
-    );
-  }
+  const profileCount = connectionManager.listAll().length;
+  logger.debug(
+    `All tools registered. No database connected. ${profileCount} profile(s) available — use connect_database tool.`
+  );
 
   return server;
 }
