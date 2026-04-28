@@ -1,5 +1,5 @@
 // ============================================================================
-// sps-mcp-server — Connection Manager
+// sps-mcp-server - Connection Manager
 // ============================================================================
 //
 // Loads database connection profiles from a JSON file (default:
@@ -61,7 +61,7 @@ export class ConnectionManager {
 
   /**
    * Loads connection profiles from the JSON file.
-   * Does not throw if the file is missing — just returns empty list.
+   * Does not throw if the file is missing - just returns empty list.
    */
   load(): void {
     try {
@@ -103,13 +103,17 @@ export class ConnectionManager {
   }
 
   /**
-   * Finds a connection profile by ID, database name, or partial match.
-   * Search is case-insensitive. Tries exact ID → exact dbName → partial match.
+   * Finds a connection profile by ID or dbName.
+   * Search is case-insensitive.
+   *
+   * Partial matches are only accepted when they uniquely identify a profile.
+   * If multiple profiles match the same partial query, returns undefined.
    */
   find(query: string): ConnectionProfile | undefined {
     if (!this.loaded) this.load();
 
-    const q = query.toLowerCase();
+    const q = query.toLowerCase().trim();
+    if (!q) return undefined;
 
     // Exact match on id
     const byId = this.profiles.find(p => p.id.toLowerCase() === q);
@@ -119,12 +123,25 @@ export class ConnectionManager {
     const byDbName = this.profiles.find(p => p.dbName.toLowerCase() === q);
     if (byDbName) return byDbName;
 
-    // Partial match (id or dbName contains query)
-    const partial = this.profiles.find(p =>
-      p.id.toLowerCase().includes(q) ||
-      p.dbName.toLowerCase().includes(q)
+    const partialMatches = this.getPartialMatches(q);
+    return partialMatches.length === 1 ? partialMatches[0] : undefined;
+  }
+
+  /**
+   * Returns profiles that match a case-insensitive partial query.
+   */
+  findPartialMatches(query: string): ConnectionProfile[] {
+    if (!this.loaded) this.load();
+    const q = query.toLowerCase().trim();
+    if (!q) return [];
+    return this.getPartialMatches(q);
+  }
+
+  private getPartialMatches(normalizedQuery: string): ConnectionProfile[] {
+    return this.profiles.filter(p =>
+      p.id.toLowerCase().includes(normalizedQuery) ||
+      p.dbName.toLowerCase().includes(normalizedQuery)
     );
-    return partial;
   }
 
   /**

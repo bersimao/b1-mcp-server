@@ -173,6 +173,14 @@ describe('execute_sql integration', () => {
     expect(result.isError).toBeUndefined();
   });
 
+  it('blocks anonymous blocks that update non-UDF fields on SAP core tables', async () => {
+    const result = await handlers.get('execute_sql')!({
+      query: 'DO BEGIN UPDATE ORDR SET "CardCode" = \'C001\' WHERE "DocEntry" = 1; END;',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('U_*');
+  });
+
   it('blocks CREATE statements', async () => {
     const result = await handlers.get('execute_sql')!({ query: 'CREATE TABLE MY_TABLE ("Col1" INT)' });
     expect(result.isError).toBe(true);
@@ -290,6 +298,25 @@ describe('execute_sql_ai integration', () => {
     });
     expect(result.isError).toBeUndefined();
   });
+
+  it('blocks anonymous blocks that update non-UDF fields on SAP core tables', async () => {
+    const result = await handlers.get('execute_sql_ai')!({
+      query: 'DO BEGIN UPDATE ORDR SET "CardCode" = ? WHERE "DocEntry" = ?; END;',
+      parameters: ['C001', 1],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('U_*');
+  });
+
+  it('allows anonymous blocks that only update UDF fields on SAP core tables', async () => {
+    (mockDb.executeQuery as any).mockResolvedValue(1);
+
+    const result = await handlers.get('execute_sql_ai')!({
+      query: 'DO BEGIN UPDATE ORDR SET "U_Custom" = ? WHERE "DocEntry" = ?; END;',
+      parameters: ['ok', 1],
+    });
+    expect(result.isError).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -374,6 +401,19 @@ describe('dry-run mode', () => {
       parameters: [1, 2], // mismatch
     });
     expect(result.isError).toBe(true);
+    expect(mockDb.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it('uses configured max query length for validation', async () => {
+    const mockDb = createMockDirectDb();
+    const { handlers } = captureToolHandlers(mockDb, { maxQueryLength: 40, dryRun: true });
+
+    const result = await handlers.get('execute_sql')!({
+      query: 'SELECT * FROM ORDR WHERE "CardCode" = \'TOO_LONG_FOR_LIMIT\'',
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('40 characters');
     expect(mockDb.executeQuery).not.toHaveBeenCalled();
   });
 });

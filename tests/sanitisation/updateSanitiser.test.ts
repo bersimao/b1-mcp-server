@@ -29,6 +29,13 @@ describe('UPDATE Sanitiser — Layer 1: Input Validation', () => {
     expect(r.reason).toContain('maximum length');
   });
 
+  it('uses custom max query length when provided', () => {
+    const query = 'UPDATE T SET X = \'' + 'A'.repeat(50) + '\'';
+    const r = sanitiseUpdate(query, 20);
+    expect(r.safe).toBe(false);
+    expect(r.reason).toContain('20');
+  });
+
   it('allows normal UPDATE queries', () => {
     const r = sanitiseUpdate('UPDATE MY_TABLE SET "Status" = \'active\' WHERE "Id" = 1');
     expect(r.safe).toBe(true);

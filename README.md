@@ -14,7 +14,8 @@ both the database (HANA / MS SQL) and the Service Layer OData API.
 - **Server-side guardrails**: SAP table classification (CORE / USER / CUSTOM /
   TEMP) with per-operation rules. INSERT/DELETE on SAP core tables blocked.
   UPDATE on SAP core tables limited to `U_*` UDFs. DROP blocked outside
-  anonymous blocks.
+  anonymous blocks. Anonymous blocks are also validated server-side (they no
+  longer bypass guardrails).
 - **Stored-procedure inspection**: SP source code is fetched and scanned for
   prohibited DML before execution; results cached.
 - **AI-generated SQL is parameterised**: `execute_sql_ai` rejects queries
@@ -46,6 +47,11 @@ Or add to your Claude Code MCP config:
 The server starts unconnected. Connections are loaded from
 `~/.claude/connections.json` (one profile per environment) and selected at
 runtime by the AI via the `connect_database` tool.
+
+Profile matching behavior in `connect_database`:
+- Exact match by `id` or `dbName` is preferred.
+- Partial matches are accepted only when they resolve to a single profile.
+- Ambiguous partial matches are rejected with a list of candidates.
 
 Example `~/.claude/connections.json`:
 
@@ -134,7 +140,11 @@ EXEC / EXECUTE / CALL in raw SQL is always blocked — call the
 ```bash
 npm install
 npm run build
-npm test         # 351 tests across guardrails, sanitiser, parser, integration
+npm run test
+npm run test:watch
+# Optional aliases (same behavior, useful if you prefer explicit naming):
+npm run test:bash
+npm run test:watch:bash
 ```
 
 Quick connection sanity check (uses a profile from `connections.json`):

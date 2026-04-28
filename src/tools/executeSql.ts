@@ -1,11 +1,8 @@
 // ============================================================================
-// Tool: execute_sql — User-provided SQL (any operation), fixed DB connection
+// Tool: execute_sql - User-provided SQL (any operation), fixed DB connection
 // ============================================================================
 //
 // This tool executes raw SQL provided DIRECTLY by the user.
-// The AI acts as a pre-validator (via tool description instructions) for
-// complex cases like anonymous blocks, while the server enforces lightweight
-// SAP guardrails for simple statements.
 //
 // ============================================================================
 
@@ -20,16 +17,10 @@ import { Config } from '../config/settings.js';
 import { OperationType } from '../types/index.js';
 import { RateLimiter } from '../rateLimit/rateLimiter.js';
 
-/** Check if SQL is an anonymous block (DO BEGIN...END or BEGIN...END). */
-function isAnonymousBlock(sql: string): boolean {
-  const upper = sql.trim().toUpperCase();
-  return upper.startsWith('DO') || upper.startsWith('BEGIN');
-}
-
 export function registerSqlTool(
   server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config, rateLimiter: RateLimiter,
 ): void {
-  // Dynamic getters — values change when the active database connection switches
+  // Dynamic getters - values change when the active database connection switches
   const dbName = () => adapter.getDbName() || '(not connected)';
   const dbType = () => adapter.getDbType();
 
@@ -37,7 +28,7 @@ export function registerSqlTool(
     'execute_sql',
     `Execute a raw SQL statement provided directly by the user against the currently connected database.
 
-IMPORTANT: This tool is for user-provided SQL ONLY. Do NOT use this tool for AI-generated queries — use "execute_sql_ai" instead.
+IMPORTANT: This tool is for user-provided SQL ONLY. Do NOT use this tool for AI-generated queries - use "execute_sql_ai" instead.
 
 IMPORTANT: Before calling this tool, you MUST confirm which database the user intends to query. If the user has not explicitly stated the target database in their message, ASK them first. Do NOT assume the currently connected database is the intended target.
 
@@ -52,7 +43,7 @@ Before executing a user-provided query, you MUST analyze it and verify:
 Rules enforced server-side:
 - SAP core tables (4-char names): UPDATE only on U_* fields. INSERT and DELETE are blocked.
 - SAP user tables (@-prefixed): INSERT and DELETE require user confirmation.
-- Direct EXEC/EXECUTE/CALL: blocked — use "execute_procedure" tool instead.
+- Direct EXEC/EXECUTE/CALL: blocked - use "execute_procedure" tool instead.
 - CREATE/ALTER: blocked.`,
     {
       query: z.string().describe('The SQL statement to execute'),
@@ -65,45 +56,13 @@ Rules enforced server-side:
       }
 
       // Input validation (null bytes, length, etc.)
-      const inputCheck = validateInput(query);
+      const inputCheck = validateInput(query, config.maxQueryLength);
       if (!inputCheck.safe) {
         logger.log(logger.createEntry({ tool: 'execute_sql', database: dbName(), dbType: dbType(), operation: OperationType.OTHER, tables: [], query, decision: 'DENY', reason: inputCheck.reason!, rule: 'inputValidation' }));
         return { content: [{ type: 'text' as const, text: `Query rejected: ${inputCheck.reason}` }], isError: true };
       }
 
-      // For anonymous blocks: run input validation only (AI is the primary validator)
-      // For simple statements: run full guardrail engine
-      if (isAnonymousBlock(query)) {
-        // Lightweight check: just audit and execute
-        const auditEntry = logger.createEntry({
-          tool: 'execute_sql', database: dbName(), dbType: dbType(),
-          operation: OperationType.OTHER, tables: [],
-          query, decision: 'ALLOW',
-          reason: 'Anonymous block — validated by AI pre-check.',
-          rule: 'anonymousBlock',
-        });
-        logger.log(auditEntry);
-
-        if (config.dryRun) {
-          return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] [DRY RUN] Anonymous block validated and ALLOWED.\nSQL: ${query}` }] };
-        }
-
-        try {
-          const result = await adapter.executeSql(query);
-          auditEntry.durationMs = result.durationMs;
-          const output = result.data != null
-            ? `[DB: ${dbName()}] ${result.rowCount} row(s) returned/affected.\n${JSON.stringify(result.data, null, 2)}`
-            : `[DB: ${dbName()}] Executed successfully. ${result.rowCount} row(s) affected.`;
-          return { content: [{ type: 'text' as const, text: output }] };
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          auditEntry.error = errorMsg;
-          logger.log(auditEntry);
-          return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Execution failed: ${errorMsg}` }], isError: true };
-        }
-      }
-
-      // --- Simple statement path: full guardrail validation ---
+      // Full guardrail validation for both simple statements and anonymous blocks.
       const guardrail = validateAnySql(query);
 
       if (!guardrail.allowed) {
@@ -119,7 +78,7 @@ Rules enforced server-side:
 
       // Additional sanitisation for UPDATE statements (4-layer defence)
       if (guardrail.parsed.operation === OperationType.UPDATE) {
-        const sanitisation = sanitiseUpdate(query);
+        const sanitisation = sanitiseUpdate(query, config.maxQueryLength);
         if (!sanitisation.safe) {
           logger.log(logger.createEntry({ tool: 'execute_sql', database: dbName(), dbType: dbType(), operation: OperationType.UPDATE, tables: guardrail.parsed.tables, query, decision: 'DENY', reason: sanitisation.reason!, rule: 'updateSanitiser' }));
           return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Update sanitisation failed: ${sanitisation.reason}` }], isError: true };

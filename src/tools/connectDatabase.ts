@@ -1,5 +1,5 @@
 // ============================================================================
-// Tool: connect_database — switch active database + Service Layer connection
+// Tool: connect_database - switch active database + Service Layer connection
 // ============================================================================
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -65,7 +65,7 @@ function resetFailures(profileId: string, side: 'db' | 'sl'): void {
 
 function formatLockoutWarning(profileId: string, side: string, count: number): string {
   if (count >= SAP_LOCKOUT_WARNING_THRESHOLD) {
-    return `\n⚠️  WARNING: ${count} consecutive failed ${side} login attempts for "${profileId}". SAP B1 may lock this user account after repeated failures. Please verify the credentials before retrying.`;
+    return `\nWARNING: ${count} consecutive failed ${side} login attempts for "${profileId}". SAP B1 may lock this user account after repeated failures. Please verify the credentials before retrying.`;
   }
   return '';
 }
@@ -81,17 +81,17 @@ export function registerConnectDatabaseTool(
 ): void {
   const profiles = connectionManager.listAll();
   const profileList = profiles.length > 0
-    ? profiles.map(p => `  - "${p.id}" → ${p.dbName} (${p.dbType}) [${formatCapabilities(p)}]`).join('\n')
+    ? profiles.map(p => `  - "${p.id}" -> ${p.dbName} (${p.dbType}) [${formatCapabilities(p)}]`).join('\n')
     : '  (no profiles loaded)';
 
   server.tool(
     'connect_database',
     `Switch the active database and Service Layer connection to a different SAP Business One environment.
-Searches connection profiles by ID or database name (case-insensitive, partial match supported).
+Searches connection profiles by ID or database name (case-insensitive). Partial matches are only accepted when they resolve to a single profile.
 
 Each profile can include DirectDb (DB) credentials, Service Layer (SL) credentials, or both.
 When switching environments, both previous connections are always disconnected first to prevent cross-environment operations.
-If only one side connects successfully, it remains active — retry the failed side after fixing credentials.
+If only one side connects successfully, it remains active - retry the failed side after fixing credentials.
 Tracks failed login attempts per profile and warns about SAP B1 account lockout risk.
 
 Available profiles:
@@ -128,8 +128,8 @@ Use "list" as the query to reload and list all available profiles.`,
 
         const currentDb = adapter.isConnected() ? adapter.getDbName() : null;
         const lines = allProfiles.map(p => {
-          const active = currentDb && p.dbName === currentDb ? ' ← active' : '';
-          return `  ${p.id} → ${p.dbName} (${p.dbType}) [${formatCapabilities(p)}]${active}`;
+          const active = currentDb && p.dbName === currentDb ? ' <- active' : '';
+          return `  ${p.id} -> ${p.dbName} (${p.dbType}) [${formatCapabilities(p)}]${active}`;
         });
 
         return {
@@ -143,7 +143,22 @@ Use "list" as the query to reload and list all available profiles.`,
       // Find the profile
       const profile = connectionManager.find(query);
       if (!profile) {
+        const partialMatches = connectionManager.findPartialMatches(query);
         const allProfiles = connectionManager.listAll();
+
+        if (partialMatches.length > 1) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text:
+                `Ambiguous profile query "${query}". ${partialMatches.length} profiles match:\n` +
+                partialMatches.map(p => `  - ${p.id} -> ${p.dbName}`).join('\n') +
+                '\n\nPlease retry using the exact profile ID.',
+            }],
+            isError: true,
+          };
+        }
+
         const hint = allProfiles.length > 0
           ? `\nAvailable: ${allProfiles.map(p => p.id).join(', ')}`
           : `\nNo profiles loaded. Check ${connectionManager.getFilePath()}`;
@@ -167,14 +182,14 @@ Use "list" as the query to reload and list all available profiles.`,
       const dbAlreadyOnTarget = adapter.isConnected() && adapter.getDbName() === profile.dbName;
       const slAlreadyOnTarget = slAdapter.isConnected() && slAdapter.getDbName() === profile.dbName;
 
-      // Both already connected to the target — nothing to do
+      // Both already connected to the target - nothing to do
       if (dbAlreadyOnTarget && slAlreadyOnTarget) {
         return {
           content: [{ type: 'text' as const, text: `Already connected to "${profile.id}" (${profile.dbName}). No changes made.` }],
         };
       }
 
-      // Switching to a different environment — disconnect both first
+      // Switching to a different environment - disconnect both first
       const isSameTarget =
         (!adapter.isConnected() || adapter.getDbName() === profile.dbName) &&
         (!slAdapter.isConnected() || slAdapter.getDbName() === profile.dbName);
@@ -183,7 +198,7 @@ Use "list" as the query to reload and list all available profiles.`,
         const previousDbName = adapter.getDbName() || slAdapter.getDbName();
         adapter.disconnect();
         slAdapter.disconnect();
-        console.error(`[connect] Switched away from "${previousDbName}" — both connections ended.`);
+        console.error(`[connect] Switched away from "${previousDbName}" - both connections ended.`);
       }
 
       // --- Connect DirectDb (skip if already on target) ---
@@ -258,9 +273,9 @@ Use "list" as the query to reload and list all available profiles.`,
 
       if (hasDb) {
         if (dbConnected) {
-          lines.push(`DirectDb: Connected (${profile.dbType})${dbPingMs != null ? ` — ${dbPingMs}ms` : ''}`);
+          lines.push(`DirectDb: Connected (${profile.dbType})${dbPingMs != null ? ` - ${dbPingMs}ms` : ''}`);
         } else {
-          lines.push(`DirectDb: FAILED — ${dbError}`);
+          lines.push(`DirectDb: FAILED - ${dbError}`);
         }
       } else {
         lines.push('DirectDb: Not configured (no dbServer/dbUser in profile)');
@@ -268,9 +283,9 @@ Use "list" as the query to reload and list all available profiles.`,
 
       if (hasSl) {
         if (slConnected) {
-          lines.push(`ServiceLayer: Connected via ${profile.slUrl}${slPingMs != null ? ` — ${slPingMs}ms` : ''}`);
+          lines.push(`ServiceLayer: Connected via ${profile.slUrl}${slPingMs != null ? ` - ${slPingMs}ms` : ''}`);
         } else {
-          lines.push(`ServiceLayer: FAILED — ${slError}`);
+          lines.push(`ServiceLayer: FAILED - ${slError}`);
         }
       } else {
         lines.push('ServiceLayer: Not configured (no slUrl/slUser in profile)');

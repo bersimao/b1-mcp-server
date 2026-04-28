@@ -40,8 +40,10 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "watch": "tsc --watch",
-    "test": "node --experimental-vm-modules node_modules/.bin/vitest run",
-    "test:watch": "node --experimental-vm-modules node_modules/.bin/vitest",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:bash": "vitest run",
+    "test:watch:bash": "vitest",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

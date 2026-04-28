@@ -34,7 +34,7 @@ import { SanitisationResult } from '../types/index.js';
 // Configuration
 // ---------------------------------------------------------------------------
 
-const MAX_QUERY_LENGTH = 8000;
+const DEFAULT_MAX_QUERY_LENGTH = 8000;
 
 // ---------------------------------------------------------------------------
 // Layer 1: Input Validation
@@ -51,8 +51,8 @@ function containsNonPrintable(sql: string): boolean {
   return /[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(sql);
 }
 
-function exceedsMaxLength(sql: string): boolean {
-  return sql.length > MAX_QUERY_LENGTH;
+function exceedsMaxLength(sql: string, maxQueryLength: number): boolean {
+  return sql.length > maxQueryLength;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +236,10 @@ function containsComments(sql: string): boolean {
  *              classification have been verified).
  * @returns SanitisationResult indicating whether the query is safe.
  */
-export function sanitiseUpdate(sql: string): SanitisationResult {
+export function sanitiseUpdate(
+  sql: string,
+  maxQueryLength: number =  process.env.MAX_QUERY_LENGTH ? parseInt(process.env.MAX_QUERY_LENGTH) : DEFAULT_MAX_QUERY_LENGTH,
+): SanitisationResult {
   // Layer 1: Input Validation
   if (containsNullBytes(sql)) {
     return { safe: false, reason: 'Query contains null bytes.' };
@@ -244,8 +247,8 @@ export function sanitiseUpdate(sql: string): SanitisationResult {
   if (containsNonPrintable(sql)) {
     return { safe: false, reason: 'Query contains non-printable control characters.' };
   }
-  if (exceedsMaxLength(sql)) {
-    return { safe: false, reason: `Query exceeds maximum length of ${MAX_QUERY_LENGTH} characters.` };
+  if (exceedsMaxLength(sql, maxQueryLength)) {
+    return { safe: false, reason: `Query exceeds maximum length of ${maxQueryLength} characters.` };
   }
 
   // Layer 2: Structure Validation

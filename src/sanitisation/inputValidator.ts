@@ -9,7 +9,7 @@
 
 import { SanitisationResult } from '../types/index.js';
 
-const MAX_QUERY_LENGTH = 8000;
+const DEFAULT_MAX_QUERY_LENGTH = 8000;
 
 /**
  * Validates a raw SQL input string.
@@ -17,7 +17,10 @@ const MAX_QUERY_LENGTH = 8000;
  * This runs BEFORE the parser. If it fails, the query is rejected
  * without ever being parsed.
  */
-export function validateInput(sql: string): SanitisationResult {
+export function validateInput(
+  sql: string,
+  maxQueryLength: number = DEFAULT_MAX_QUERY_LENGTH,
+): SanitisationResult {
   if (typeof sql !== 'string') {
     return { safe: false, reason: 'Query must be a string.' };
   }
@@ -30,8 +33,8 @@ export function validateInput(sql: string): SanitisationResult {
     return { safe: false, reason: 'Query contains null bytes.' };
   }
 
-  if (sql.length > MAX_QUERY_LENGTH) {
-    return { safe: false, reason: `Query exceeds maximum length of ${MAX_QUERY_LENGTH} characters.` };
+  if (sql.length > maxQueryLength) {
+    return { safe: false, reason: `Query exceeds maximum length of ${maxQueryLength} characters.` };
   }
 
   return { safe: true };
