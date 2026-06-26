@@ -10,7 +10,6 @@ declare module 'sps-sap-interface' {
       poolSettings?: any;
     }): Promise<any>;
     executeQuery(query: string, params?: any[]): Promise<any>;
-    executeProcedure(procedure: string, params?: any[]): Promise<any>;
     close(): Promise<void>;
   };
 }

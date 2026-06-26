@@ -6,10 +6,8 @@
 // DB adapter → mock DirectDb. They verify that the security model works
 // end-to-end, not just in isolated unit tests.
 //
-// Tools under test:
-//   - execute_sql      (user-provided SQL)
-//   - execute_sql_ai   (AI-generated SQL with mandatory placeholders)
-//   - execute_procedure (stored procedure inspection)
+// Tools under test (read-only server):
+//   - execute_sql      (SELECT only)
 //   - get_schema_info  (read-only metadata)
 //
 // ============================================================================
@@ -19,11 +17,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { DbAdapter, DirectDbModule } from '../../src/db/adapter.js';
 import { AuditLogger } from '../../src/logging/auditLogger.js';
 import { Config } from '../../src/config/settings.js';
-import { ProcedureInspectionCache } from '../../src/inspection/procedureCache.js';
 import { RateLimiter } from '../../src/rateLimit/rateLimiter.js';
 import { registerSqlTool } from '../../src/tools/executeSql.js';
-import { registerSqlAiTool } from '../../src/tools/executeSqlAi.js';
-import { registerProcedureTool } from '../../src/tools/executeProcedure.js';
 import { registerSchemaTool } from '../../src/tools/schemaIntrospection.js';
 
 // ---------------------------------------------------------------------------
@@ -35,7 +30,6 @@ function createMockDirectDb(): DirectDbModule {
     close: vi.fn(),
     init: vi.fn().mockResolvedValue({}),
     executeQuery: vi.fn().mockResolvedValue([]),
-    executeProcedure: vi.fn().mockResolvedValue([]),
   };
 }
 
@@ -45,8 +39,6 @@ function createTestConfig(overrides: Partial<Config> = {}): Config {
     maxQueryLength: 8000,
     auditLogPath: '',
     logLevel: 'error',
-    procedureCacheTtlMs: 1800000,
-    procedureCacheMaxSize: 200,
     rateLimitMaxCalls: 1000,
     rateLimitWindowMs: 60000,
     dryRun: false,
@@ -68,7 +60,6 @@ function captureToolHandlers(
   const config = createTestConfig(configOverrides);
   const logger = new AuditLogger(config);
   const adapter = new DbAdapter(mockDirectDb);
-  const cache = new ProcedureInspectionCache({ maxSize: 200, ttlMs: 1800000 });
   const rateLimiter = new RateLimiter({ maxCalls: config.rateLimitMaxCalls, windowMs: config.rateLimitWindowMs });
 
   const fakeServer = {
@@ -83,8 +74,6 @@ function captureToolHandlers(
   (adapter as any).initialised = true;
 
   registerSqlTool(fakeServer, adapter, logger, config, rateLimiter);
-  registerSqlAiTool(fakeServer, adapter, logger, config, rateLimiter);
-  registerProcedureTool(fakeServer, adapter, logger, config, cache, rateLimiter);
   registerSchemaTool(fakeServer, adapter, logger, config, rateLimiter);
 
   return { handlers, adapter, mockDirectDb };
@@ -118,12 +107,10 @@ describe('execute_sql integration', () => {
     expect(result.isError).toBe(true);
   });
 
-  it('allows UPDATE of UDF on SAP core table', async () => {
-    (mockDb.executeQuery as any).mockResolvedValue(1);
-
+  it('blocks UPDATE of UDF on SAP core table (read-only)', async () => {
     const result = await handlers.get('execute_sql')!({ query: 'UPDATE ORDR SET "U_Custom" = \'val\' WHERE "DocEntry" = 1' });
-    expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toContain('successfully');
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('READ-ONLY');
   });
 
   it('blocks INSERT into SAP core table', async () => {
@@ -136,26 +123,16 @@ describe('execute_sql integration', () => {
     expect(result.isError).toBe(true);
   });
 
-  it('requires confirmation for DELETE on SAP user table', async () => {
-    const result = await handlers.get('execute_sql')!({ query: 'DELETE FROM "@MY_UDT" WHERE "Code" = \'001\'' });
-    expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toContain('confirm');
-  });
-
-  it('executes DELETE on SAP user table after confirmation', async () => {
-    (mockDb.executeQuery as any).mockResolvedValue(1);
-
+  it('blocks DELETE on SAP user table even with confirmed (read-only)', async () => {
     const result = await handlers.get('execute_sql')!({ query: 'DELETE FROM "@MY_UDT" WHERE "Code" = \'001\'', confirmed: true });
-    expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toContain('successfully');
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('READ-ONLY');
   });
 
-  it('allows DELETE on custom table without confirmation', async () => {
-    (mockDb.executeQuery as any).mockResolvedValue(1);
-
+  it('blocks DELETE on custom table (read-only)', async () => {
     const result = await handlers.get('execute_sql')!({ query: 'DELETE FROM MY_CUSTOM_TABLE WHERE "Id" = 1' });
-    expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toContain('successfully');
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('READ-ONLY');
   });
 
   it('blocks multi-statement queries', async () => {
@@ -164,21 +141,20 @@ describe('execute_sql integration', () => {
     expect(result.content[0].text).toContain('Multi-statement');
   });
 
-  it('executes anonymous DO BEGIN...END blocks', async () => {
-    (mockDb.executeQuery as any).mockResolvedValue(1);
-
+  it('blocks anonymous blocks that contain a write (read-only)', async () => {
     const result = await handlers.get('execute_sql')!({
       query: 'DO BEGIN DECLARE v INT := 1; UPDATE ORDR SET "U_Field" = :v WHERE "DocEntry" = 1; END;',
     });
-    expect(result.isError).toBeUndefined();
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('READ-ONLY');
   });
 
-  it('blocks anonymous blocks that update non-UDF fields on SAP core tables', async () => {
+  it('blocks anonymous blocks that update SAP core tables (read-only)', async () => {
     const result = await handlers.get('execute_sql')!({
       query: 'DO BEGIN UPDATE ORDR SET "CardCode" = \'C001\' WHERE "DocEntry" = 1; END;',
     });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('U_*');
+    expect(result.content[0].text).toContain('READ-ONLY');
   });
 
   it('blocks CREATE statements', async () => {
@@ -190,178 +166,16 @@ describe('execute_sql integration', () => {
   it('blocks EXEC statements', async () => {
     const result = await handlers.get('execute_sql')!({ query: 'EXEC MY_PROCEDURE' });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('execute_procedure');
+    expect(result.content[0].text).toContain('not permitted');
+  });
+
+  it('blocks OPENQUERY pass-through in a SELECT', async () => {
+    const result = await handlers.get('execute_sql')!({ query: "SELECT * FROM OPENQUERY(LINKED, 'DELETE FROM ORDR')" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('OPENQUERY');
   });
 });
 
-// ---------------------------------------------------------------------------
-// execute_sql_ai (AI-generated with mandatory placeholders)
-// ---------------------------------------------------------------------------
-
-describe('execute_sql_ai integration', () => {
-  let handlers: Map<string, ToolHandler>;
-  let mockDb: DirectDbModule;
-
-  beforeEach(() => {
-    const ctx = captureToolHandlers(createMockDirectDb());
-    handlers = ctx.handlers;
-    mockDb = ctx.mockDirectDb;
-  });
-
-  it('executes parameterised SELECT', async () => {
-    (mockDb.executeQuery as any).mockResolvedValue([{ DocEntry: 1 }]);
-
-    const result = await handlers.get('execute_sql_ai')!({
-      query: 'SELECT * FROM ORDR WHERE "DocEntry" = ?',
-      parameters: [1],
-    });
-    expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toContain('1 row(s) returned');
-    // Verify params were passed to DirectDb
-    expect(mockDb.executeQuery).toHaveBeenCalledWith(
-      'SELECT * FROM ORDR WHERE "DocEntry" = ?',
-      [1],
-    );
-  });
-
-  it('rejects placeholder mismatch (more params than placeholders)', async () => {
-    const result = await handlers.get('execute_sql_ai')!({
-      query: 'SELECT * FROM ORDR WHERE "DocEntry" = ?',
-      parameters: [1, 2],
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Placeholder mismatch');
-  });
-
-  it('rejects placeholder mismatch (fewer params than placeholders)', async () => {
-    const result = await handlers.get('execute_sql_ai')!({
-      query: 'SELECT * FROM ORDR WHERE "DocEntry" = ? AND "CardCode" = ?',
-      parameters: [1],
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Placeholder mismatch');
-  });
-
-  it('allows zero placeholders with empty params (e.g., SELECT CURRENT_DATE)', async () => {
-    (mockDb.executeQuery as any).mockResolvedValue([{ date: '2026-01-01' }]);
-
-    const result = await handlers.get('execute_sql_ai')!({
-      query: 'SELECT CURRENT_DATE FROM DUMMY',
-      parameters: [],
-    });
-    expect(result.isError).toBeUndefined();
-  });
-
-  it('blocks UPDATE of non-UDF on SAP core table', async () => {
-    const result = await handlers.get('execute_sql_ai')!({
-      query: 'UPDATE ORDR SET "CardCode" = ? WHERE "DocEntry" = ?',
-      parameters: ['C001', 1],
-    });
-    expect(result.isError).toBe(true);
-  });
-
-  it('allows UPDATE of UDF on SAP core table with placeholders', async () => {
-    (mockDb.executeQuery as any).mockResolvedValue(1);
-
-    const result = await handlers.get('execute_sql_ai')!({
-      query: 'UPDATE ORDR SET "U_Custom" = ? WHERE "DocEntry" = ?',
-      parameters: ['val', 1],
-    });
-    expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toContain('successfully');
-  });
-
-  it('blocks INSERT into SAP core table', async () => {
-    const result = await handlers.get('execute_sql_ai')!({
-      query: 'INSERT INTO ORDR ("CardCode") VALUES (?)',
-      parameters: ['C001'],
-    });
-    expect(result.isError).toBe(true);
-  });
-
-  it('requires confirmation for INSERT into SAP user table', async () => {
-    const result = await handlers.get('execute_sql_ai')!({
-      query: 'INSERT INTO "@MY_UDT" ("Code", "Name") VALUES (?, ?)',
-      parameters: ['001', 'Test'],
-    });
-    expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toContain('confirm');
-  });
-
-  it('does not count ? inside string literals', async () => {
-    (mockDb.executeQuery as any).mockResolvedValue([{ x: 1 }]);
-
-    // The ? inside the string literal should NOT count as a placeholder
-    const result = await handlers.get('execute_sql_ai')!({
-      query: 'SELECT * FROM ORDR WHERE "CardCode" = ? AND "U_Notes" LIKE \'What?\'',
-      parameters: ['C001'],
-    });
-    expect(result.isError).toBeUndefined();
-  });
-
-  it('blocks anonymous blocks that update non-UDF fields on SAP core tables', async () => {
-    const result = await handlers.get('execute_sql_ai')!({
-      query: 'DO BEGIN UPDATE ORDR SET "CardCode" = ? WHERE "DocEntry" = ?; END;',
-      parameters: ['C001', 1],
-    });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('U_*');
-  });
-
-  it('allows anonymous blocks that only update UDF fields on SAP core tables', async () => {
-    (mockDb.executeQuery as any).mockResolvedValue(1);
-
-    const result = await handlers.get('execute_sql_ai')!({
-      query: 'DO BEGIN UPDATE ORDR SET "U_Custom" = ? WHERE "DocEntry" = ?; END;',
-      parameters: ['ok', 1],
-    });
-    expect(result.isError).toBeUndefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// execute_procedure (unchanged)
-// ---------------------------------------------------------------------------
-
-describe('execute_procedure integration', () => {
-  let handlers: Map<string, ToolHandler>;
-  let mockDb: DirectDbModule;
-
-  beforeEach(() => {
-    const ctx = captureToolHandlers(createMockDirectDb());
-    handlers = ctx.handlers;
-    mockDb = ctx.mockDirectDb;
-  });
-
-  it('allows safe procedure after inspection', async () => {
-    (mockDb.executeQuery as any).mockResolvedValueOnce([
-      { DEFINITION: 'CREATE PROCEDURE SAFE_SP AS BEGIN SELECT * FROM ORDR; END' },
-    ]);
-    (mockDb.executeProcedure as any).mockResolvedValue([{ result: 'ok' }]);
-
-    const result = await handlers.get('execute_procedure')!({ procedure: 'SAFE_SP' });
-    expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toContain('successfully');
-  });
-
-  it('blocks procedure with INSERT into SAP core table', async () => {
-    (mockDb.executeQuery as any).mockResolvedValueOnce([
-      { DEFINITION: 'CREATE PROCEDURE EVIL_SP AS BEGIN INSERT INTO ORDR ("CardCode") VALUES (\'C001\'); END' },
-    ]);
-
-    const result = await handlers.get('execute_procedure')!({ procedure: 'EVIL_SP' });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('blocked');
-  });
-
-  it('blocks when procedure source is not found', async () => {
-    (mockDb.executeQuery as any).mockResolvedValueOnce([]);
-
-    const result = await handlers.get('execute_procedure')!({ procedure: 'NONEXISTENT_SP' });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('not found');
-  });
-});
 
 // ---------------------------------------------------------------------------
 // Dry-run mode
@@ -376,31 +190,6 @@ describe('dry-run mode', () => {
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('[DRY RUN]');
     expect(result.content[0].text).toContain('ALLOWED');
-    expect(mockDb.executeQuery).not.toHaveBeenCalled();
-  });
-
-  it('validates but does not execute execute_sql_ai in dry-run', async () => {
-    const mockDb = createMockDirectDb();
-    const { handlers } = captureToolHandlers(mockDb, { dryRun: true });
-
-    const result = await handlers.get('execute_sql_ai')!({
-      query: 'SELECT * FROM ORDR WHERE "DocEntry" = ?',
-      parameters: [1],
-    });
-    expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toContain('[DRY RUN]');
-    expect(mockDb.executeQuery).not.toHaveBeenCalled();
-  });
-
-  it('still rejects invalid queries in dry-run mode', async () => {
-    const mockDb = createMockDirectDb();
-    const { handlers } = captureToolHandlers(mockDb, { dryRun: true });
-
-    const result = await handlers.get('execute_sql_ai')!({
-      query: 'SELECT * FROM ORDR WHERE "DocEntry" = ?',
-      parameters: [1, 2], // mismatch
-    });
-    expect(result.isError).toBe(true);
     expect(mockDb.executeQuery).not.toHaveBeenCalled();
   });
 

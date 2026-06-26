@@ -64,7 +64,7 @@ async function main(): Promise<void> {
   await server.connect(transport);
 
   console.error('[sps-mcp-server] Server running on stdio transport.');
-  console.error('[sps-mcp-server] Tools: connect_database, execute_sql, execute_sql_ai, execute_procedure, execute_service_layer, get_schema_info, check_connection');
+  console.error('[sps-mcp-server] Tools: connect_database, execute_sql, execute_service_layer, get_schema_info, check_connection');
 }
 
 main().catch((error) => {

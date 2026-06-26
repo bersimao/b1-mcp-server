@@ -18,11 +18,8 @@ import { AuditLogger } from './logging/auditLogger.js';
 import { DbAdapter, DirectDbModule } from './db/adapter.js';
 import { ServiceLayerAdapter, ServiceLayerModule } from './sl/serviceLayerAdapter.js';
 import { ConnectionManager } from './config/connectionManager.js';
-import { ProcedureInspectionCache } from './inspection/procedureCache.js';
 import { RateLimiter } from './rateLimit/rateLimiter.js';
 import { registerSqlTool } from './tools/executeSql.js';
-import { registerSqlAiTool } from './tools/executeSqlAi.js';
-import { registerProcedureTool } from './tools/executeProcedure.js';
 import { registerSchemaTool } from './tools/schemaIntrospection.js';
 import { registerCheckConnectionTool } from './tools/checkConnection.js';
 import { registerConnectDatabaseTool } from './tools/connectDatabase.js';
@@ -49,11 +46,6 @@ export async function createServer(
   const connectionManager = new ConnectionManager(config.connectionsFile || undefined);
   connectionManager.load();
 
-  const inspectionCache = new ProcedureInspectionCache({
-    maxSize: config.procedureCacheMaxSize,
-    ttlMs: config.procedureCacheTtlMs,
-  });
-
   const rateLimiter = new RateLimiter({
     maxCalls: config.rateLimitMaxCalls,
     windowMs: config.rateLimitWindowMs,
@@ -68,8 +60,6 @@ export async function createServer(
   // Register tools — all tools share the same adapters (single active connection)
   registerConnectDatabaseTool(server, adapter, slAdapter, logger, config, connectionManager, rateLimiter);
   registerSqlTool(server, adapter, logger, config, rateLimiter);
-  registerSqlAiTool(server, adapter, logger, config, rateLimiter);
-  registerProcedureTool(server, adapter, logger, config, inspectionCache, rateLimiter);
   registerSchemaTool(server, adapter, logger, config, rateLimiter);
   registerServiceLayerTool(server, slAdapter, adapter, logger, config, rateLimiter);
   registerCheckConnectionTool(server, adapter, slAdapter, logger, config, rateLimiter);

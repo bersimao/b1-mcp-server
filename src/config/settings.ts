@@ -23,12 +23,6 @@ export interface Config {
   /** Logging level. */
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 
-  /** Procedure inspection cache TTL in milliseconds. */
-  procedureCacheTtlMs: number;
-
-  /** Procedure inspection cache max size. */
-  procedureCacheMaxSize: number;
-
   /** Rate limit: max calls per tool within the window. */
   rateLimitMaxCalls: number;
 
@@ -51,14 +45,6 @@ export function loadConfig(): Config {
     auditLogPath: process.env.MCP_AUDIT_LOG_PATH || resolve(homedir(), '.claude', 'logs', 'sps-mcp-audit.jsonl'),
 
     logLevel: (process.env.MCP_LOG_LEVEL as Config['logLevel']) || 'info',
-
-    procedureCacheTtlMs: parseInt(
-      process.env.MCP_PROCEDURE_CACHE_TTL_MS || String(30 * 60 * 1000), 10
-    ),
-
-    procedureCacheMaxSize: parseInt(
-      process.env.MCP_PROCEDURE_CACHE_MAX_SIZE || '200', 10
-    ),
 
     rateLimitMaxCalls: parseInt(
       process.env.MCP_RATE_LIMIT_MAX_CALLS || '60', 10

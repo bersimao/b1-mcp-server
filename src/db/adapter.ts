@@ -27,9 +27,6 @@
 //   // ? placeholders  → parameter binding (protects against SQL injection)
 //   // NOTE: placeholders work for SELECT but NOT for UPDATE
 //
-//   const result = await DirectDb.executeProcedure("SP_NAME", ["param1", "param2"]);
-//   // Second argument is an ARRAY of positional params, not an object.
-//
 // ============================================================================
 
 import { DbType, FieldValue } from '../types/index.js';
@@ -49,7 +46,6 @@ export interface DirectDbInitConfig {
 export interface DirectDbModule {
   init(config: DirectDbInitConfig): Promise<any>;
   executeQuery(query: string, params?: any[]): Promise<any>;
-  executeProcedure(procedure: string, params?: any[]): Promise<any>;
   close(): Promise<void>;
 }
 
@@ -179,76 +175,6 @@ export class DbAdapter {
   }
 
   /**
-   * Executes an UPDATE query as plain text (no ? placeholders).
-   *
-   * sps-sap-interface does NOT support placeholder binding for UPDATE.
-   * The query is passed as-is, having already been validated and sanitised
-   * by the guardrail + sanitiser pipeline.
-   *
-   * IMPORTANT: The query should still use {db} placeholder for table
-   * references so DirectDb can resolve the schema correctly.
-   */
-  async executeUpdate(query: string): Promise<QueryResult> {
-    this.ensureInitialised();
-    const start = Date.now();
-
-    try {
-      const data = await this.directDb.executeQuery(query, undefined);
-
-      return {
-        data,
-        rowCount: typeof data === 'number' ? data : 0,
-        durationMs: Date.now() - start,
-      };
-    } catch (err) {
-      throw this.wrapError(err, 'executeUpdate');
-    }
-  }
-
-  /**
-   * Executes a DELETE query (plain text, no parameter binding).
-   */
-  async executeDelete(query: string): Promise<QueryResult> {
-    this.ensureInitialised();
-    const start = Date.now();
-
-    try {
-      const data = await this.directDb.executeQuery(query, undefined);
-
-      return {
-        data,
-        rowCount: typeof data === 'number' ? data : 0,
-        durationMs: Date.now() - start,
-      };
-    } catch (err) {
-      throw this.wrapError(err, 'executeDelete');
-    }
-  }
-
-  /**
-   * Executes an INSERT query with ? placeholder binding.
-   */
-  async executeInsert(query: string, params: FieldValue[]): Promise<QueryResult> {
-    this.ensureInitialised();
-    const start = Date.now();
-
-    try {
-      const data = await this.directDb.executeQuery(
-        query,
-        params.length > 0 ? params : undefined,
-      );
-
-      return {
-        data,
-        rowCount: typeof data === 'number' ? data : 1,
-        durationMs: Date.now() - start,
-      };
-    } catch (err) {
-      throw this.wrapError(err, 'executeInsert');
-    }
-  }
-
-  /**
    * Generic SQL execution method.
    *
    * Handles any SQL statement (SELECT, UPDATE, INSERT, DELETE, anonymous blocks).
@@ -274,60 +200,6 @@ export class DbAdapter {
       };
     } catch (err) {
       throw this.wrapError(err, 'executeSql');
-    }
-  }
-
-  /**
-   * Calls a stored procedure via DirectDb.executeProcedure().
-   *
-   * IMPORTANT: sps-sap-interface takes an ARRAY of positional parameters,
-   * not a key-value object. The tool must convert named params to an array
-   * in the correct order before calling this method.
-   */
-  async executeProcedure(procedure: string, params: any[]): Promise<QueryResult> {
-    this.ensureInitialised();
-    const start = Date.now();
-
-    try {
-      const data = await this.directDb.executeProcedure(
-        procedure,
-        params.length > 0 ? params : undefined,
-      );
-
-      return {
-        data,
-        rowCount: Array.isArray(data) ? data.length : 0,
-        durationMs: Date.now() - start,
-      };
-    } catch (err) {
-      throw this.wrapError(err, 'executeProcedure');
-    }
-  }
-
-  /**
-   * Fetches a stored procedure's source code from the system catalog.
-   */
-  async fetchProcedureSource(procedureName: string): Promise<string | null> {
-    this.ensureInitialised();
-    const cleanName = procedureName.replace(/["[\]`]/g, '').trim();
-
-    let query: string;
-    if (this.dbType === 'hana') {
-      query = `SELECT "DEFINITION" FROM "SYS"."PROCEDURES" WHERE "PROCEDURE_NAME" = '${cleanName.replace(/'/g, "''")}'`;
-    } else {
-      query = `SELECT m.definition FROM sys.sql_modules m INNER JOIN sys.procedures p ON m.object_id = p.object_id WHERE p.name = '${cleanName.replace(/'/g, "''")}'`;
-    }
-
-    try {
-      const result = await this.directDb.executeQuery(query, undefined);
-
-      if (Array.isArray(result) && result.length > 0) {
-        return result[0].DEFINITION || result[0].definition || null;
-      }
-      return null;
-    } catch (err) {
-      console.error(`[adapter] Failed to fetch procedure source for "${procedureName}":`, err);
-      return null;
     }
   }
 

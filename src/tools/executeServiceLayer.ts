@@ -26,7 +26,7 @@ export function registerServiceLayerTool(
     'execute_service_layer',
     `Execute an OData request against the SAP Business One Service Layer for the currently connected database.
 
-Supports GET, POST, PATCH, and DELETE methods on any Service Layer endpoint.
+Only GET and PATCH are permitted. POST (create) and DELETE are blocked server-side; PUT is not supported. For a create or delete, hand the request to the user to run in their own client.
 
 IMPORTANT: Before calling this tool, you MUST confirm which database the user intends to query. If the user has not explicitly stated the target database in their message, ASK them first. Do NOT assume the currently connected database is the intended target.
 
@@ -40,20 +40,16 @@ Examples:
   Update a UDF on a Business Partner:
     method: "PATCH", url: "BusinessPartners('C0001')", body: { "U_CustomField": "value" }
 
-  Create a new UDT record:
-    method: "POST", url: "U_MY_UDT", body: { "Code": "001", "Name": "Test" }
-
 Guardrails:
-- GET: Always allowed (read-only).
-- POST/PATCH: Allowed. The Service Layer enforces its own validation.
-- DELETE: Requires explicit user confirmation (set confirmed: true).`,
+- GET: read-only, always allowed.
+- PATCH: allowed (the Service Layer enforces its own validation and runs atomically).
+- POST / PUT / DELETE: blocked.`,
     {
-      method: z.enum(['GET', 'POST', 'PATCH', 'DELETE']).describe('HTTP method for the OData request'),
+      method: z.enum(['GET', 'PATCH']).describe('HTTP method for the OData request — only GET and PATCH are allowed'),
       url: z.string().describe('OData endpoint path (e.g. "BusinessPartners(\'C0001\')" or "Orders?$filter=...")'),
-      body: z.record(z.any()).optional().describe('JSON body for POST/PATCH requests'),
-      confirmed: z.boolean().optional().describe('Set to true to confirm a DELETE operation'),
+      body: z.record(z.any()).optional().describe('JSON body for PATCH requests'),
     },
-    async ({ method, url, body, confirmed }) => {
+    async ({ method, url, body }) => {
       const rateCheck = rateLimiter.check('execute_service_layer');
       if (!rateCheck.allowed) {
         return {
@@ -73,31 +69,28 @@ Guardrails:
         };
       }
 
-      // DELETE confirmation gate
-      if (method === 'DELETE' && !confirmed) {
-        const slOperation = `DELETE ${url}`;
+      // Method allow-list — only GET and PATCH. Defensive: also enforced by the zod enum.
+      if (method !== 'GET' && method !== 'PATCH') {
         logger.log(logger.createEntry({
           tool: 'execute_service_layer', database: dbName(), dbType: dbType(),
-          operation: OperationType.DELETE, tables: [], query: slOperation,
-          decision: 'PENDING_CONFIRMATION',
-          reason: 'DELETE via Service Layer requires explicit user confirmation.',
-          rule: 'slDeleteConfirmation',
+          operation: OperationType.OTHER, tables: [], query: `${method} ${url}`,
+          decision: 'DENY',
+          reason: `Service Layer ${method} is blocked — only GET and PATCH are permitted.`,
+          rule: 'slMethodAllowList',
         }));
-
         return {
           content: [{
             type: 'text' as const,
-            text: `[DB: ${dbName()}] DELETE operation requires confirmation.\nTarget: ${url}\n\nTo proceed, call this tool again with the same parameters and \`confirmed: true\`.`,
+            text: `[DB: ${dbName()}] ${method} is blocked via the Service Layer — only GET and PATCH are permitted. For a create/delete, run the request in your own client.`,
           }],
+          isError: true,
         };
       }
 
-      // Map HTTP method to operation type for audit
+      // Map HTTP method to operation type for audit (only GET/PATCH reachable)
       const opMap: Record<string, OperationType> = {
         GET: OperationType.SELECT,
-        POST: OperationType.INSERT,
         PATCH: OperationType.UPDATE,
-        DELETE: OperationType.DELETE,
       };
       const operation = opMap[method] || OperationType.OTHER;
       const slOperation = `${method} ${url}`;

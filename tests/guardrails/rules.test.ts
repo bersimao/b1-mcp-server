@@ -3,7 +3,7 @@
 // ============================================================================
 
 import { describe, it, expect } from 'vitest';
-import { validate, validateReadOnly, validateRawUpdate } from '../../src/guardrails/index.js';
+import { validate } from '../../src/guardrails/index.js';
 
 // ---------------------------------------------------------------------------
 // SELECT — always allowed
@@ -362,186 +362,34 @@ describe('CASE expression evasion', () => {
 });
 
 // ---------------------------------------------------------------------------
-// validateReadOnly — the actual entry point for the execute_query tool
+// MS SQL pass-through (OPENQUERY / OPENROWSET / OPENDATASOURCE) inside SELECT
 // ---------------------------------------------------------------------------
 
-describe('validateReadOnly (execute_query tool enforcement)', () => {
-  // --- SELECT: allowed ---
+describe('pass-through blocklist (SELECT-disguised writes)', () => {
+  it('blocks OPENQUERY in a SELECT', () => {
+    const r = validate("SELECT * FROM OPENQUERY(LINKED, 'DELETE FROM ORDR')");
+    expect(r.allowed).toBe(false);
+    expect(r.rule).toBe('passThroughBlock');
+  });
 
-  it('allows SELECT through raw SQL', () => {
-    const r = validateReadOnly('SELECT * FROM ORDR');
+  it('blocks OPENROWSET in a SELECT', () => {
+    const r = validate("SELECT * FROM OPENROWSET('SQLNCLI', 'conn', 'DELETE FROM ORDR')");
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toContain('OPENROWSET');
+  });
+
+  it('blocks OPENDATASOURCE in a SELECT', () => {
+    const r = validate("SELECT * FROM OPENDATASOURCE('SQLNCLI', 'conn').db.dbo.t");
+    expect(r.allowed).toBe(false);
+  });
+
+  it('blocks pass-through that wraps an UPDATE', () => {
+    const r = validate("SELECT * FROM OPENQUERY(LINKED, 'UPDATE ORDR SET x=1')");
+    expect(r.allowed).toBe(false);
+  });
+
+  it('allows a normal SELECT that does not use pass-through', () => {
+    const r = validate('SELECT * FROM ORDR WHERE "DocEntry" = 1');
     expect(r.allowed).toBe(true);
-  });
-
-  it('allows complex SELECT with JOINs and subqueries', () => {
-    const r = validateReadOnly(
-      'SELECT O.*, (SELECT COUNT(*) FROM RDR1 R WHERE R."DocEntry" = O."DocEntry") AS "LineCount" FROM ORDR O'
-    );
-    expect(r.allowed).toBe(true);
-  });
-
-  it('allows SELECT with CTE', () => {
-    const r = validateReadOnly(
-      'WITH cte AS (SELECT * FROM ORDR WHERE "DocStatus" = \'O\') SELECT * FROM cte'
-    );
-    expect(r.allowed).toBe(true);
-  });
-
-  // --- All write operations: denied with redirect ---
-
-  it('blocks UPDATE and redirects to execute_update', () => {
-    const r = validateReadOnly('UPDATE ORDR SET "U_Field" = \'val\' WHERE "DocEntry" = 1');
-    expect(r.allowed).toBe(false);
-    expect(r.rule).toBe('readOnlyEnforcement');
-    expect(r.reason).toContain('execute_update');
-  });
-
-  it('blocks INSERT and redirects to execute_insert', () => {
-    const r = validateReadOnly('INSERT INTO "@MY_UDT" ("Code") VALUES (\'001\')');
-    expect(r.allowed).toBe(false);
-    expect(r.reason).toContain('execute_insert');
-  });
-
-  it('blocks DELETE through raw SQL', () => {
-    const r = validateReadOnly('DELETE FROM MY_CUSTOM_TABLE WHERE "Id" = 1');
-    expect(r.allowed).toBe(false);
-  });
-
-  it('blocks DROP through raw SQL', () => {
-    const r = validateReadOnly('DROP TABLE my_custom_table');
-    expect(r.allowed).toBe(false);
-  });
-
-  it('blocks EXEC and redirects to execute_procedure', () => {
-    const r = validateReadOnly('EXEC sp_help');
-    expect(r.allowed).toBe(false);
-    expect(r.reason).toContain('execute_procedure');
-  });
-
-  it('blocks CALL (HANA) and redirects to execute_procedure', () => {
-    const r = validateReadOnly('CALL MY_PROCEDURE()');
-    expect(r.allowed).toBe(false);
-    expect(r.reason).toContain('execute_procedure');
-  });
-
-  it('blocks CREATE through raw SQL', () => {
-    const r = validateReadOnly('CREATE TABLE foo (id INT)');
-    expect(r.allowed).toBe(false);
-  });
-
-  it('blocks multi-statement with SELECT + write', () => {
-    const r = validateReadOnly('SELECT 1; DROP TABLE ORDR');
-    expect(r.allowed).toBe(false);
-    expect(r.reason).toContain('Multi-statement');
-  });
-
-  it('blocks CTE wrapping a write operation', () => {
-    const r = validateReadOnly(
-      'WITH cte AS (SELECT * FROM ORDR) DELETE FROM cte'
-    );
-    expect(r.allowed).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// validateRawUpdate — fallback path for complex UPDATEs
-// ---------------------------------------------------------------------------
-
-describe('validateRawUpdate (execute_update raw SQL fallback)', () => {
-  // --- Allowed: valid raw UPDATE statements ---
-
-  it('allows UDF-only UPDATE on SAP core table', () => {
-    const r = validateRawUpdate(
-      'UPDATE ORDR SET "U_Custom" = \'val\' WHERE "DocEntry" = 1'
-    );
-    expect(r.allowed).toBe(true);
-  });
-
-  it('allows complex CASE expression UPDATE on UDF', () => {
-    const r = validateRawUpdate(
-      'UPDATE ORDR SET "U_Status" = CASE WHEN "CardCode" = \'C001\' THEN \'Active\' ELSE \'Inactive\' END WHERE "DocEntry" = 1'
-    );
-    expect(r.allowed).toBe(true);
-  });
-
-  it('allows column arithmetic on UDF', () => {
-    const r = validateRawUpdate(
-      'UPDATE ORDR SET "U_Count" = "U_Count" + 1 WHERE "DocEntry" = 1'
-    );
-    expect(r.allowed).toBe(true);
-  });
-
-  it('allows subquery value on UDF', () => {
-    const r = validateRawUpdate(
-      'UPDATE ORDR SET "U_Total" = (SELECT SUM("LineTotal") FROM RDR1 WHERE RDR1."DocEntry" = ORDR."DocEntry") WHERE "DocEntry" = 1'
-    );
-    expect(r.allowed).toBe(true);
-  });
-
-  it('allows any column UPDATE on custom table', () => {
-    const r = validateRawUpdate(
-      'UPDATE MY_CUSTOM_TABLE SET "Status" = \'done\', "Count" = "Count" + 1 WHERE "Id" = 1'
-    );
-    expect(r.allowed).toBe(true);
-  });
-
-  // --- Denied: guardrail violations ---
-
-  it('blocks non-UDF column on SAP core table', () => {
-    const r = validateRawUpdate(
-      'UPDATE ORDR SET "CardCode" = \'C001\' WHERE "DocEntry" = 1'
-    );
-    expect(r.allowed).toBe(false);
-    expect(r.reason).toContain('CardCode');
-  });
-
-  it('blocks multi-statement in raw UPDATE', () => {
-    const r = validateRawUpdate(
-      'UPDATE MY_TABLE SET "X" = 1; DROP TABLE ORDR'
-    );
-    expect(r.allowed).toBe(false);
-    expect(r.reason).toContain('Multi-statement');
-  });
-
-  // --- Denied: not an UPDATE ---
-
-  it('blocks SELECT disguised as UPDATE', () => {
-    const r = validateRawUpdate('SELECT * FROM ORDR');
-    expect(r.allowed).toBe(false);
-    expect(r.rule).toBe('rawUpdateTypeEnforcement');
-    expect(r.reason).toContain('Expected an UPDATE');
-  });
-
-  it('blocks DELETE disguised as UPDATE', () => {
-    const r = validateRawUpdate('DELETE FROM ORDR WHERE "DocEntry" = 1');
-    expect(r.allowed).toBe(false);
-    expect(r.reason).toContain('Expected an UPDATE');
-  });
-
-  it('blocks DROP disguised as UPDATE', () => {
-    const r = validateRawUpdate('DROP TABLE ORDR');
-    expect(r.allowed).toBe(false);
-    expect(r.reason).toContain('Expected an UPDATE');
-  });
-
-  it('blocks INSERT sent through the update tool', () => {
-    const r = validateRawUpdate(
-      'INSERT INTO ORDR ("U_Field") VALUES (\'val\')'
-    );
-    expect(r.allowed).toBe(false);
-    expect(r.reason).toContain('Expected an UPDATE');
-  });
-
-  it('blocks EXEC sent through the update tool', () => {
-    const r = validateRawUpdate('EXEC sp_executesql N\'DROP TABLE ORDR\'');
-    expect(r.allowed).toBe(false);
-  });
-
-  it('blocks CTE wrapping a DELETE sent as "update"', () => {
-    const r = validateRawUpdate(
-      'WITH cte AS (SELECT * FROM ORDR) DELETE FROM cte'
-    );
-    expect(r.allowed).toBe(false);
-    expect(r.reason).toContain('Expected an UPDATE');
   });
 });

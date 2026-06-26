@@ -10,7 +10,6 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { validateAnySql } from '../guardrails/index.js';
 import { validateInput } from '../sanitisation/inputValidator.js';
-import { sanitiseUpdate } from '../sanitisation/updateSanitiser.js';
 import { DbAdapter } from '../db/adapter.js';
 import { AuditLogger } from '../logging/auditLogger.js';
 import { Config } from '../config/settings.js';
@@ -32,24 +31,19 @@ IMPORTANT: This tool is for user-provided SQL ONLY. Do NOT use this tool for AI-
 
 IMPORTANT: Before calling this tool, you MUST confirm which database the user intends to query. If the user has not explicitly stated the target database in their message, ASK them first. Do NOT assume the currently connected database is the intended target.
 
-Supports all SQL operations: SELECT, UPDATE, INSERT, DELETE, and anonymous blocks (DO BEGIN...END for HANA, BEGIN...END for MSSQL).
+READ-ONLY: only SELECT (and read-only DO BEGIN...END blocks) execute. Data-changing statements are blocked server-side.
 
-Before executing a user-provided query, you MUST analyze it and verify:
-  1. No writes (UPDATE/INSERT/DELETE) to SAP core table fields that are NOT User-Defined Fields (U_* prefix). SAP core tables have 4-character names (e.g., ORDR, OITM, INV1, RDR1). Only U_* columns may be modified on these tables.
-  2. No destructive operations (DROP, TRUNCATE) unless the user explicitly confirms.
-  3. If the query contains a DO BEGIN...END or BEGIN...END block, inspect every DML statement inside for rule violations described above.
-  4. If any violation is found, explain the issue to the user and REFUSE to execute. Do NOT call this tool with a violating query.
+If the user needs a write (INSERT/UPDATE/DELETE), do NOT call this tool — generate the SQL and give it to the user to run in a real DB client (HANA Studio / DBeaver / hdbsql), where COMMIT is guaranteed.
 
 Rules enforced server-side:
-- SAP core tables (4-char names): UPDATE only on U_* fields. INSERT and DELETE are blocked.
-- SAP user tables (@-prefixed): INSERT and DELETE require user confirmation.
-- Direct EXEC/EXECUTE/CALL: blocked - use "execute_procedure" tool instead.
-- CREATE/ALTER: blocked.`,
+- READ-ONLY: INSERT/UPDATE/DELETE/DROP are blocked for everyone — no confirmation bypass.
+- Direct EXEC/EXECUTE/CALL: blocked (stored procedures are disabled).
+- CREATE/ALTER: blocked.
+- MS SQL pass-through (OPENQUERY/OPENROWSET/OPENDATASOURCE): blocked.`,
     {
-      query: z.string().describe('The SQL statement to execute'),
-      confirmed: z.boolean().optional().describe('Set to true after the user has confirmed a risky operation (e.g., DELETE on SAP user tables)'),
+      query: z.string().describe('The SQL statement to execute (SELECT only — read-only server)'),
     },
-    async ({ query, confirmed }) => {
+    async ({ query }) => {
       const rateCheck = rateLimiter.check('execute_sql');
       if (!rateCheck.allowed) {
         return { content: [{ type: 'text' as const, text: `Rate limit exceeded for execute_sql. Try again in ${Math.ceil(rateCheck.retryAfterMs / 1000)}s.` }], isError: true };
@@ -70,21 +64,6 @@ Rules enforced server-side:
         return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] ${guardrail.reason}` }], isError: true };
       }
 
-      // Confirmation gate
-      if (guardrail.requiresConfirmation && !confirmed) {
-        logger.log(logger.createEntry({ tool: 'execute_sql', database: dbName(), dbType: dbType(), operation: guardrail.parsed.operation, tables: guardrail.parsed.tables, query, decision: 'PENDING_CONFIRMATION', reason: guardrail.reason, rule: guardrail.rule }));
-        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] ${guardrail.confirmationMessage!}\n\nTo proceed, call this tool again with the same query and \`confirmed: true\`.` }] };
-      }
-
-      // Additional sanitisation for UPDATE statements (4-layer defence)
-      if (guardrail.parsed.operation === OperationType.UPDATE) {
-        const sanitisation = sanitiseUpdate(query, config.maxQueryLength);
-        if (!sanitisation.safe) {
-          logger.log(logger.createEntry({ tool: 'execute_sql', database: dbName(), dbType: dbType(), operation: OperationType.UPDATE, tables: guardrail.parsed.tables, query, decision: 'DENY', reason: sanitisation.reason!, rule: 'updateSanitiser' }));
-          return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Update sanitisation failed: ${sanitisation.reason}` }], isError: true };
-        }
-      }
-
       // Audit and execute
       const auditEntry = logger.createEntry({
         tool: 'execute_sql', database: dbName(), dbType: dbType(),
@@ -102,11 +81,7 @@ Rules enforced server-side:
       try {
         const result = await adapter.executeSql(query);
         auditEntry.durationMs = result.durationMs;
-
-        if (guardrail.parsed.operation === OperationType.SELECT) {
-          return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] ${result.rowCount} row(s) returned.\n${JSON.stringify(result.data, null, 2)}` }] };
-        }
-        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Executed successfully. ${result.rowCount} row(s) affected.` }] };
+        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] ${result.rowCount} row(s) returned.\n${JSON.stringify(result.data, null, 2)}` }] };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         auditEntry.error = errorMsg;
