@@ -79,6 +79,54 @@ describe('hasMultipleStatements', () => {
       "SELECT * FROM ORDR WHERE Name = 'hello; world'"
     )).toBe(false);
   });
+
+  it('returns false for a DO block containing a CASE...END expression (HANA)', () => {
+    expect(hasMultipleStatements(
+      "DO BEGIN SELECT CASE WHEN 1 = 1 THEN 'a' ELSE 'b' END A FROM DUMMY; END;"
+    )).toBe(false);
+  });
+
+  it('returns false for nested CASE expressions inside a DO block', () => {
+    expect(hasMultipleStatements(
+      "DO BEGIN SELECT CASE WHEN 1 = 1 THEN CASE WHEN 2 = 2 THEN 'x' END ELSE 'b' END A FROM DUMMY; END;"
+    )).toBe(false);
+  });
+
+  it('returns false for IF...END IF inside a DO block (HANA)', () => {
+    expect(hasMultipleStatements(
+      'DO BEGIN IF 1 = 1 THEN SELECT 1 A FROM DUMMY; END IF; END;'
+    )).toBe(false);
+  });
+
+  it('returns false for WHILE...END WHILE and FOR...END FOR inside a DO block (HANA)', () => {
+    expect(hasMultipleStatements(
+      'DO BEGIN DECLARE i INT DEFAULT 0; WHILE :i < 3 DO i = :i + 1; END WHILE; FOR j IN 1..2 DO SELECT 1 A FROM DUMMY; END FOR; END;'
+    )).toBe(false);
+  });
+
+  it('still flags a statement appended after a block that contains CASE', () => {
+    expect(hasMultipleStatements(
+      "DO BEGIN SELECT CASE WHEN 1 = 1 THEN 'a' END A FROM DUMMY; END; DROP TABLE ORDR"
+    )).toBe(true);
+  });
+
+  it('returns true for BEGIN TRAN followed by another statement (MSSQL)', () => {
+    expect(hasMultipleStatements(
+      'BEGIN TRAN; UPDATE ORDR SET "U_X" = 1'
+    )).toBe(true);
+  });
+
+  it('returns false for BEGIN TRY...END TRY BEGIN CATCH...END CATCH (MSSQL)', () => {
+    expect(hasMultipleStatements(
+      'BEGIN TRY SELECT 1; END TRY BEGIN CATCH SELECT 2; END CATCH'
+    )).toBe(false);
+  });
+
+  it('does not treat quoted identifiers as block keywords', () => {
+    expect(hasMultipleStatements(
+      'SELECT "CASE" FROM DUMMY; SELECT "END" FROM DUMMY'
+    )).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -394,6 +442,36 @@ describe('allDropsInsideBlocks', () => {
       'DO BEGIN BEGIN DROP TABLE #temp; END; END'
     )).toBe(true);
   });
+
+  it('returns true for DROP after a CASE...END expression inside a block', () => {
+    expect(allDropsInsideBlocks(
+      "DO BEGIN SELECT CASE WHEN 1 = 1 THEN 'a' END A FROM DUMMY; DROP TABLE #temp; END"
+    )).toBe(true);
+  });
+
+  it('returns false for DROP after a block that contains a CASE expression', () => {
+    expect(allDropsInsideBlocks(
+      "DO BEGIN SELECT CASE WHEN 1 = 1 THEN 'a' END A FROM DUMMY; END; DROP TABLE my_custom_table"
+    )).toBe(false);
+  });
+
+  it('returns true for DROP inside IF...END IF within a block (HANA)', () => {
+    expect(allDropsInsideBlocks(
+      'DO BEGIN IF 1 = 1 THEN DROP TABLE #temp; END IF; END'
+    )).toBe(true);
+  });
+
+  it('returns false for standalone DROP after BEGIN TRAN (MSSQL)', () => {
+    expect(allDropsInsideBlocks(
+      'BEGIN TRAN; DROP TABLE my_custom_table; COMMIT'
+    )).toBe(false);
+  });
+
+  it('ignores DROP TABLE inside string literals', () => {
+    expect(allDropsInsideBlocks(
+      "SELECT 'DROP TABLE X' FROM DUMMY"
+    )).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -427,6 +505,13 @@ describe('parseQuery', () => {
   it('detects multi-statement queries', () => {
     const result = parseQuery('SELECT 1; DROP TABLE ORDR');
     expect(result.isMultiStatement).toBe(true);
+  });
+
+  it('does not flag a DO block with CASE...END as multi-statement', () => {
+    const result = parseQuery(
+      "DO BEGIN SELECT CASE WHEN 1 = 1 THEN 'a' ELSE 'b' END A FROM DUMMY; END;"
+    );
+    expect(result.isMultiStatement).toBe(false);
   });
 
   it('parses DROP with block detection', () => {

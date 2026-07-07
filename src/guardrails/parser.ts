@@ -98,54 +98,132 @@ export function stripComments(sql: string): string {
 }
 
 /**
- * Checks whether a semicolon exists outside of string literals and
- * outside of BEGIN...END / DO BEGIN...END blocks.
- * Indicates a multi-statement query.
+ * Reads the full word (\w+) starting at position `i` of an uppercased SQL
+ * string. Assumes the caller already verified `i` is at a word boundary.
+ */
+function wordAt(upper: string, i: number): string {
+  let j = i;
+  while (j < upper.length && /\w/.test(upper[j])) j++;
+  return upper.slice(i, j);
+}
+
+/**
+ * Returns the next word after position `i`, skipping whitespace.
+ * Returns '' when the next non-whitespace character is not a word character.
+ */
+function nextWordAfter(upper: string, i: number): string {
+  let j = i;
+  while (j < upper.length && /\s/.test(upper[j])) j++;
+  if (j >= upper.length || !/\w/.test(upper[j])) return '';
+  return wordAt(upper, j);
+}
+
+/**
+ * Evaluates a block keyword (BEGIN, CASE or END) found at position `i` and
+ * returns the block-depth delta plus how many characters to consume.
+ *
+ * Depth rules:
+ *   BEGIN                 → +1 (block opener; also BEGIN TRY / BEGIN CATCH)
+ *   BEGIN TRAN[SACTION] /
+ *   BEGIN DISTRIBUTED     →  0 (MSSQL transaction start — has no matching END)
+ *   CASE                  → +1 (CASE expression, closed by a bare END)
+ *   END IF / END WHILE /
+ *   END FOR / END LOOP    →  0 (HANA two-token closers whose openers —
+ *                               IF/WHILE/FOR/LOOP — are never counted)
+ *   END CASE / END TRY /
+ *   END CATCH             → -1 (two-token closers whose openers were counted)
+ *   END                   → -1 (closes BEGIN or CASE)
+ *
+ * Two-token forms consume both tokens so the second token is never re-scanned
+ * (e.g. the CASE in END CASE must not be seen as a new opener).
+ */
+function scanBlockKeyword(
+  upper: string,
+  i: number,
+  word: string
+): { delta: number; skip: number } {
+  if (word === 'BEGIN') {
+    const next = nextWordAfter(upper, i + word.length);
+    if (next === 'TRAN' || next === 'TRANSACTION' || next === 'DISTRIBUTED') {
+      return { delta: 0, skip: word.length };
+    }
+    return { delta: 1, skip: word.length };
+  }
+
+  if (word === 'CASE') {
+    return { delta: 1, skip: word.length };
+  }
+
+  // word === 'END'
+  const next = nextWordAfter(upper, i + word.length);
+  if (next === 'IF' || next === 'WHILE' || next === 'FOR' || next === 'LOOP') {
+    const skipTo = upper.indexOf(next, i + word.length) + next.length;
+    return { delta: 0, skip: skipTo - i };
+  }
+  if (next === 'CASE' || next === 'TRY' || next === 'CATCH') {
+    const skipTo = upper.indexOf(next, i + word.length) + next.length;
+    return { delta: -1, skip: skipTo - i };
+  }
+  return { delta: -1, skip: word.length };
+}
+
+/**
+ * Checks whether a semicolon exists outside of string literals, outside of
+ * quoted identifiers ("..." / [...]) and outside of BEGIN...END /
+ * DO BEGIN...END blocks. Indicates a multi-statement query.
  *
  * Semicolons inside instruction blocks are statement separators within
  * a single compound statement, not multi-statement indicators.
+ *
+ * CASE expressions are tracked like blocks: their closing END must not be
+ * mistaken for a block terminator, otherwise a DO BEGIN...END containing a
+ * CASE...END would be falsely flagged as multi-statement. Likewise, HANA
+ * two-token closers (END IF, END WHILE, END FOR, END LOOP) are neutral
+ * because their openers are never counted.
  */
 export function hasMultipleStatements(sql: string): boolean {
   let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inBracket = false;
   let blockDepth = 0;
   const upper = sql.toUpperCase();
 
   for (let i = 0; i < sql.length; i++) {
     const ch = sql[i];
 
-    // --- String literal tracking ---
-    if (ch === '\'' && !inSingleQuote) {
-      inSingleQuote = true;
-      continue;
-    }
-    if (ch === '\'' && inSingleQuote) {
-      if (i + 1 < sql.length && sql[i + 1] === '\'') {
-        i++; // Skip escaped quote
-        continue;
+    // --- String literal and quoted identifier tracking ---
+    if (inSingleQuote) {
+      if (ch === '\'') {
+        if (i + 1 < sql.length && sql[i + 1] === '\'') { i++; continue; } // Escaped quote
+        inSingleQuote = false;
       }
-      inSingleQuote = false;
       continue;
     }
-    if (inSingleQuote) continue;
+    if (inDoubleQuote) {
+      if (ch === '"') {
+        if (i + 1 < sql.length && sql[i + 1] === '"') { i++; continue; } // Escaped quote
+        inDoubleQuote = false;
+      }
+      continue;
+    }
+    if (inBracket) {
+      if (ch === ']') inBracket = false;
+      continue;
+    }
+    if (ch === '\'') { inSingleQuote = true; continue; }
+    if (ch === '"') { inDoubleQuote = true; continue; }
+    if (ch === '[') { inBracket = true; continue; }
 
-    // --- Block depth tracking (BEGIN...END) ---
-    // Check for DO BEGIN or BEGIN keyword at word boundary
-    if (i + 8 <= upper.length && upper.slice(i, i + 8).match(/^DO\s+BEGIN/) && (i === 0 || /\W/.test(upper[i - 1]))) {
-      const m = upper.slice(i).match(/^DO\s+BEGIN\b/);
-      if (m) {
-        blockDepth++;
-        i += m[0].length - 1;
-        continue;
+    // --- Block depth tracking (BEGIN/CASE ... END) ---
+    if (/[A-Z]/.test(upper[i]) && (i === 0 || !/\w/.test(upper[i - 1]))) {
+      const word = wordAt(upper, i);
+      if (word === 'BEGIN' || word === 'CASE' || word === 'END') {
+        const { delta, skip } = scanBlockKeyword(upper, i, word);
+        blockDepth = Math.max(0, blockDepth + delta);
+        i += skip - 1;
+      } else {
+        i += word.length - 1; // Skip the rest of a non-keyword word
       }
-    }
-    if (i + 5 <= upper.length && upper.slice(i, i + 5) === 'BEGIN' && (i === 0 || /\W/.test(upper[i - 1])) && (i + 5 >= upper.length || /\W/.test(upper[i + 5]))) {
-      blockDepth++;
-      i += 4;
-      continue;
-    }
-    if (i + 3 <= upper.length && upper.slice(i, i + 3) === 'END' && (i === 0 || /\W/.test(upper[i - 1])) && (i + 3 >= upper.length || /\W/.test(upper[i + 3]))) {
-      blockDepth = Math.max(0, blockDepth - 1);
-      i += 2;
       continue;
     }
 
@@ -551,6 +629,10 @@ export function extractInsertColumns(sql: string): string[] {
  * Checks whether ALL DROP TABLE statements in the SQL appear inside
  * BEGIN...END blocks (or DO BEGIN...END for HANA).
  *
+ * Uses the same character walker as hasMultipleStatements, so string
+ * literals, quoted identifiers, CASE...END expressions and two-token
+ * closers (END IF, END WHILE, ...) do not corrupt the depth tracking.
+ *
  * Returns true if every DROP is inside a block, false otherwise.
  * Returns true if there are no DROP statements (vacuously true).
  */
@@ -558,65 +640,52 @@ export function allDropsInsideBlocks(sql: string): boolean {
   const cleaned = stripComments(sql);
   const upper = cleaned.toUpperCase();
 
-  // Find all DROP TABLE positions
-  const dropPositions: number[] = [];
-  const dropPattern = /\bDROP\s+TABLE\b/gi;
-  let match: RegExpExecArray | null;
-  while ((match = dropPattern.exec(upper)) !== null) {
-    dropPositions.push(match.index);
-  }
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inBracket = false;
+  let blockDepth = 0;
 
-  if (dropPositions.length === 0) return true;
+  for (let i = 0; i < cleaned.length; i++) {
+    const ch = cleaned[i];
 
-  // Build a map of character positions that are inside BEGIN...END blocks
-  // Track block depth at each position
-  const blockDepthAt = new Map<number, number>();
-  let depth = 0;
-
-  // Tokenise keywords with their positions
-  const keywordPattern = /\b(DO\s+BEGIN|BEGIN|END)\b/gi;
-  const keywords: Array<{ keyword: string; index: number }> = [];
-  while ((match = keywordPattern.exec(upper)) !== null) {
-    keywords.push({ keyword: match[1].replace(/\s+/g, ' ').toUpperCase(), index: match.index });
-  }
-
-  // Sort by position
-  keywords.sort((a, b) => a.index - b.index);
-
-  // Build depth ranges
-  const depthRanges: Array<{ start: number; end: number; depth: number }> = [];
-  let currentDepth = 0;
-  let rangeStart = 0;
-
-  for (const kw of keywords) {
-    if (kw.index > rangeStart) {
-      depthRanges.push({ start: rangeStart, end: kw.index, depth: currentDepth });
-    }
-
-    if (kw.keyword === 'BEGIN' || kw.keyword === 'DO BEGIN') {
-      currentDepth++;
-      rangeStart = kw.index;
-    } else if (kw.keyword === 'END') {
-      rangeStart = kw.index;
-      currentDepth = Math.max(0, currentDepth - 1);
-    }
-  }
-
-  // Final range
-  if (rangeStart < upper.length) {
-    depthRanges.push({ start: rangeStart, end: upper.length, depth: currentDepth });
-  }
-
-  // Check each DROP position
-  for (const dropPos of dropPositions) {
-    let insideBlock = false;
-    for (const range of depthRanges) {
-      if (dropPos >= range.start && dropPos < range.end && range.depth > 0) {
-        insideBlock = true;
-        break;
+    // --- String literal and quoted identifier tracking ---
+    if (inSingleQuote) {
+      if (ch === '\'') {
+        if (i + 1 < cleaned.length && cleaned[i + 1] === '\'') { i++; continue; } // Escaped quote
+        inSingleQuote = false;
       }
+      continue;
     }
-    if (!insideBlock) return false;
+    if (inDoubleQuote) {
+      if (ch === '"') {
+        if (i + 1 < cleaned.length && cleaned[i + 1] === '"') { i++; continue; } // Escaped quote
+        inDoubleQuote = false;
+      }
+      continue;
+    }
+    if (inBracket) {
+      if (ch === ']') inBracket = false;
+      continue;
+    }
+    if (ch === '\'') { inSingleQuote = true; continue; }
+    if (ch === '"') { inDoubleQuote = true; continue; }
+    if (ch === '[') { inBracket = true; continue; }
+
+    // --- Keyword scanning ---
+    if (/[A-Z]/.test(upper[i]) && (i === 0 || !/\w/.test(upper[i - 1]))) {
+      const word = wordAt(upper, i);
+      if (word === 'BEGIN' || word === 'CASE' || word === 'END') {
+        const { delta, skip } = scanBlockKeyword(upper, i, word);
+        blockDepth = Math.max(0, blockDepth + delta);
+        i += skip - 1;
+      } else {
+        if (word === 'DROP' && blockDepth === 0 && nextWordAfter(upper, i + word.length) === 'TABLE') {
+          return false; // Standalone DROP TABLE outside any block
+        }
+        i += word.length - 1;
+      }
+      continue;
+    }
   }
 
   return true;
