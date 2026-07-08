@@ -2,9 +2,25 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project reference
+- **Project note:** [MCP sps-db](file:///mnt/c/Users/bernardo.simao/repos_local/OBSIDIAN/obsidian_work/MCP%20sps-db.md)
+- **OneDrive (docs/entregáveis):** file:///mnt/c/Users/bernardo.simao/OneDrive%20-%20SPS%20Consultoria/Dados/PROJETOS/SPS/MCP%20sps-db
+- Registry: this demand is registered in `~/.claude/data/demands.json`.
+
+## Session behavior
+- On session start, read the project note and surface its **open doubts**
+  (`- [ ] #duvida`) in one short line. No doubts → say nothing.
+- When we hit a genuine ambiguity (spec unclear, missing definition), don't let
+  it die in chat: add it as `- [ ] #duvida ...` under the relevant TO-DO task in
+  the project note (see the `duvida` skill) and tell me you logged it.
+- Deliverables (final SQL, evidence, docs sent to the client) are COPIED to the
+  OneDrive folder above; intermediate/throwaway files stay here in the workdir.
+
 ## Project
 
 `sps-mcp-server` is a Model Context Protocol server that gives an AI client guarded access to SAP Business One via both `DirectDb` (HANA / MS SQL) and the Service Layer OData API. Both adapters come from the `sps-sap-interface` npm module.
+
+**Read-only posture:** the DirectDb/SQL path executes only `SELECT` (and anonymous blocks whose statements are all reads); every `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` is blocked at the guardrail — there is no confirmation bypass. The Service Layer path allows `GET` and `PATCH` only (`PATCH` is safe because the Service Layer commits atomically, unlike the shared DirectDb pool). Writes are the human's job: the AI hands the SQL to a person who runs it in a real DB client.
 
 The server starts **without** any database or Service Layer connection. The AI must call `connect_database` to load a profile from `~/.claude/connections.json` and connect both sides at once. There is no env-var fallback — credentials live exclusively in that file.
 
@@ -17,7 +33,7 @@ npm install                        # one-time
 npm run build                      # tsc — prebuild wipes dist/ for a clean output
 npm run watch                      # tsc --watch
 npm run dev                        # tsx src/index.ts (skips build)
-npm test                           # vitest run — full suite (362 tests)
+npm test                           # vitest run — full suite (227 tests)
 npm run test:watch                 # vitest in watch mode
 
 # Single file
@@ -60,10 +76,8 @@ Profile matching (`ConnectionManager.find` in [src/config/connectionManager.ts](
 
 ### `sps-sap-interface` call shapes (gotchas)
 
-- `DirectDb.executeQuery(query, params?)` — `{db}` is the schema placeholder DirectDb resolves at runtime; `?` is the parameter placeholder.
-- `DirectDb.executeProcedure(name, paramsArray)` — positional array, **not** key-value.
+- `DirectDb.executeQuery(query, params?)` — `{db}` is the schema placeholder DirectDb resolves at runtime; `?` is the parameter placeholder. This read-only server only ever issues `SELECT`, so `?` binding always applies.
 - `ServiceLayer.execute({ method, url, data?, header?, page?, size?, timeout? })` — auto-reconnects on 401.
-- **`?` parameter binding works for SELECT and INSERT but NOT for UPDATE.** UPDATEs are passed as plain text, which is why a dedicated 4-layer sanitiser exists.
 
 ### MCP tools
 
@@ -72,30 +86,28 @@ Every tool is registered in [src/server.ts](src/server.ts) and shares the same a
 | Tool | File | Purpose |
 |---|---|---|
 | `connect_database` | [tools/connectDatabase.ts](src/tools/connectDatabase.ts) | Switch active DB + SL; `"list"` to enumerate profiles |
-| `execute_sql` | [tools/executeSql.ts](src/tools/executeSql.ts) | User-provided SQL; all ops including anonymous blocks, fully validated server-side |
-| `execute_sql_ai` | [tools/executeSqlAi.ts](src/tools/executeSqlAi.ts) | AI-generated SQL, **mandatory `?` placeholders** matching the parameters array length |
-| `execute_procedure` | [tools/executeProcedure.ts](src/tools/executeProcedure.ts) | Calls SP after inspecting its body |
-| `execute_service_layer` | [tools/executeServiceLayer.ts](src/tools/executeServiceLayer.ts) | OData GET/POST/PATCH/DELETE; DELETE requires user confirmation |
+| `execute_sql` | [tools/executeSql.ts](src/tools/executeSql.ts) | Runs SQL (user- or AI-written) — **read-only**: only SELECT and read-only anonymous blocks pass `validateAnySql()` |
+| `execute_service_layer` | [tools/executeServiceLayer.ts](src/tools/executeServiceLayer.ts) | OData **GET / PATCH only**; POST/PUT/DELETE blocked server-side |
 | `get_schema_info` | [tools/schemaIntrospection.ts](src/tools/schemaIntrospection.ts) | Read-only metadata, HANA + MSSQL catalog syntax |
 | `check_connection` | [tools/checkConnection.ts](src/tools/checkConnection.ts) | Independent health pings for DB and SL |
 
-The split between `execute_sql` and `execute_sql_ai` is **by origin, not by operation**. Both go through the same `validateAnySql()` pipeline — the difference is `execute_sql_ai` additionally requires that the `?` placeholder count matches the parameters array length, blocking malformed AI-generated queries before they hit the DB.
+`execute_sql` handles SQL regardless of origin — user-written or AI-generated queries all go through the same `validateAnySql()` pipeline, which on this read-only server permits only SELECT (and anonymous blocks whose statements are all reads).
 
 ### Guardrail engine
 
-[src/guardrails/](src/guardrails/) is the security core. Both SQL tools call `validateAnySql()` from [guardrails/index.ts](src/guardrails/index.ts), which:
+[src/guardrails/](src/guardrails/) is the security core. The `execute_sql` tool calls `validateAnySql()` from [guardrails/index.ts](src/guardrails/index.ts), which:
 
-1. [parser.ts](src/guardrails/parser.ts) — tokenises and classifies operation type, table list, SET columns. For `DO BEGIN..END` (HANA) and `BEGIN..END` (MSSQL) anonymous blocks, **decomposes** the body and surfaces every inner DML statement so each one passes through the rules below. Semicolons inside the block are allowed; bare multi-statement queries are not.
+1. [parser.ts](src/guardrails/parser.ts) — tokenises and classifies operation type, table list, SET columns. For `DO BEGIN..END` (HANA) and `BEGIN..END` (MSSQL) anonymous blocks it classifies the block by the **most dangerous statement inside it**: any write/exec/DDL keyword (`INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/CALL/EXEC/TRUNCATE/MERGE/…`) makes the whole block that operation, so a block can never be disguised as a read by appending a trailing `SELECT`. Keyword scanning blanks out quoted spans so a keyword inside a string/identifier doesn't false-trigger. Semicolons inside a block are allowed; bare multi-statement queries are not.
 2. [tableClassifier.ts](src/guardrails/tableClassifier.ts) — name-based classification:
    - **SAP_CORE** (≤4 chars, e.g. `ORDR`, `OITM`, `INV1`): most restrictive
    - **SAP_USER** (`@`-prefixed UDTs, e.g. `@MY_UDT`)
    - **CUSTOM** (>4 chars, no `@`)
    - **TEMP** (`#` / `##` prefixed)
-3. Per-operation rule under [guardrails/rules/](src/guardrails/rules/) — applied to every statement, including those extracted from anonymous blocks.
-4. For `execute_sql_ai` only: [placeholderValidator.ts](src/guardrails/placeholderValidator.ts) — counts `?` and rejects mismatched parameter arrays.
-5. For plain-text UPDATEs (which can't use `?` binding): [sanitisation/updateSanitiser.ts](src/sanitisation/updateSanitiser.ts) — 4 layers: input validation → structure validation (no UNION/INTERSECT/EXCEPT) → dangerous-pattern detection (`xp_cmdshell`, `EXEC(`, `CALL`, `WAITFOR`, `OPENROWSET`, `sp_executesql`) → comment blocking.
+3. Read-only enforcement — `validateAnySql()` permits only `SELECT`; `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` and unrecognised operations are all denied. Two writes-disguised-as-reads are blocked explicitly in [rules/selectRule.ts](src/guardrails/rules/selectRule.ts): `SELECT ... INTO <table>` (MS SQL table creation) and pass-through functions (`OPENQUERY/OPENROWSET/OPENDATASOURCE`). Both checks run on comment-stripped, quote-blanked SQL so an inline comment (`OPENQUERY/**/(...)`) cannot evade them.
 
-Operation rules matrix:
+The per-operation rules under [guardrails/rules/](src/guardrails/rules/) (INSERT/UPDATE/DELETE/DROP) still exist and encode the classification model below, but on the live read-only server they are reachable only through the internal `validate()` helper used by the unit tests — the live tool path stops at SELECT.
+
+Classification model (the rules under `guardrails/rules/`, exercised by tests — **not** the live gate, which is read-only):
 
 | Op | SAP_CORE | SAP_USER | CUSTOM | TEMP |
 |---|---|---|---|---|
@@ -105,11 +117,7 @@ Operation rules matrix:
 | DELETE | block | confirm | allow | allow |
 | DROP | block | block | only inside `BEGIN..END` | only inside `BEGIN..END` |
 
-Always blocked: `EXEC` / `EXECUTE` / `CALL` in raw SQL (use `execute_procedure`), `CREATE` / `ALTER`, multi-statement queries (semicolons).
-
-### Stored procedure inspection
-
-[src/inspection/](src/inspection/) — before any SP runs, its source is fetched from the system catalog and scanned for prohibited DML. Results cached by SHA-256 of the body in an LRU with 30-min TTL. This is why `execute_procedure` is the only path for SPs: `EXEC` / `CALL` in raw SQL is rejected.
+Always blocked in raw SQL regardless: `EXEC` / `EXECUTE` / `CALL`, `CREATE` / `ALTER`, and multi-statement queries (semicolons outside blocks).
 
 ### Audit log
 
@@ -124,10 +132,8 @@ src/
   config/             settings + connection-profile loader
   db/, sl/            adapters around DirectDb / ServiceLayer
   tools/              one file per MCP tool
-  guardrails/         parser, classifier, per-op rules, placeholder validator
-  sanitisation/       UPDATE sanitiser, input validator
-  builders/           structured JSON → parameterised SQL with {db} prefix
-  inspection/         SP body inspector + LRU cache
+  guardrails/         parser, table classifier, per-op rules (index.ts = read-only gate)
+  sanitisation/       input validator (length / null-byte pre-checks)
   rateLimit/          sliding-window per-tool rate limiter
   logging/            JSON Lines audit logger
 tests/                mirrors src/ — vitest, every guardrail rule covered
@@ -140,7 +146,7 @@ scripts/
 1. **Deny by default.** Unrecognised operations are rejected.
 2. **Audit before execute.** Even denied operations are written to the audit log.
 3. **Never rewrite suspicious queries.** Accept as-is or reject; no silent normalisation.
-4. **Server is the authority on SQL safety.** Anonymous `DO BEGIN..END` / `BEGIN..END` blocks are decomposed and every inner statement is rule-checked — the AI's tool description still asks it to pre-validate as a courtesy, but trust does not depend on it.
+4. **Server is the authority on SQL safety.** The live SQL path is read-only: `validateAnySql()` executes only `SELECT`. Anonymous `DO BEGIN..END` / `BEGIN..END` blocks are classified by their most dangerous inner statement, so a write/exec hidden behind a trailing `SELECT` is still blocked — trust does not depend on the AI pre-validating.
 5. **HANA vs MSSQL syntax differs** throughout (e.g. `CALL` vs `EXEC`, `DO BEGIN` vs `BEGIN`, schema-introspection queries). When adding features, handle both.
 6. **`{db}` placeholder** appears in every generated query so DirectDb resolves the schema for the active profile.
 7. **Credentials never leave the server process.** Profile listings expose only `id`, `dbName`, `dbType`, `slUrl`, capability flags. Adapters do not retain passwords. Nothing is interpolated into tool responses, audit entries, or error messages.
