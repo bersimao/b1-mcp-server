@@ -103,7 +103,7 @@ export function validate(sql: string): GuardrailResult & { parsed: ParsedQuery }
  * Validates any SQL statement (SELECT, UPDATE, INSERT, DELETE, DROP,
  * and anonymous blocks like DO BEGIN...END / BEGIN...END).
  *
- * Used by the unified execute_sql and execute_sql_ai tools.
+ * Used by the execute_sql tool.
  *
  * For anonymous blocks:
  *   - The parser detects the "most dangerous" operation inside the block.

@@ -181,7 +181,7 @@ export class DbAdapter {
    * If params are provided, uses parameter binding via DirectDb.
    * Otherwise, sends the query as plain text.
    *
-   * Used by the unified execute_sql and execute_sql_ai tools.
+   * Used by the execute_sql tool.
    */
   async executeSql(query: string, params?: FieldValue[]): Promise<QueryResult> {
     this.ensureInitialised();
