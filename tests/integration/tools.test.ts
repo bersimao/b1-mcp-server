@@ -157,6 +157,37 @@ describe('execute_sql integration', () => {
     expect(result.content[0].text).toContain('READ-ONLY');
   });
 
+  it('blocks a block hiding CALL behind a trailing SELECT (read-only)', async () => {
+    const result = await handlers.get('execute_sql')!({
+      query: 'DO BEGIN CALL "SOME_WRITE_PROC"(); SELECT 1 FROM DUMMY; END;',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('not permitted');
+    expect(mockDb.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it('blocks a block hiding TRUNCATE behind a trailing SELECT (read-only)', async () => {
+    const result = await handlers.get('execute_sql')!({
+      query: 'DO BEGIN TRUNCATE TABLE "MYLOG"; SELECT 1 FROM DUMMY; END;',
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('READ-ONLY');
+    expect(mockDb.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it('blocks SELECT ... INTO (table write disguised as a read)', async () => {
+    const result = await handlers.get('execute_sql')!({ query: 'SELECT * INTO EvilCopy FROM ORDR' });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('INTO');
+    expect(mockDb.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it('blocks OPENQUERY split from its args by an inline comment', async () => {
+    const result = await handlers.get('execute_sql')!({ query: "SELECT * FROM OPENQUERY/**/(LNK, 'x')" });
+    expect(result.isError).toBe(true);
+    expect(mockDb.executeQuery).not.toHaveBeenCalled();
+  });
+
   it('blocks CREATE statements', async () => {
     const result = await handlers.get('execute_sql')!({ query: 'CREATE TABLE MY_TABLE ("Col1" INT)' });
     expect(result.isError).toBe(true);

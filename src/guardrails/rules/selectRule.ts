@@ -6,26 +6,55 @@
 // handled by the parser, which classifies the outermost operation as the
 // mutation type (not SELECT).
 //
-// MS SQL pass-through caveat: OPENQUERY / OPENROWSET / OPENDATASOURCE appear
-// inside a SELECT but can execute ARBITRARY remote SQL (including INSERT/
-// UPDATE/DELETE) on a linked server, bypassing read-only enforcement. These
-// are blocked. (HANA has no equivalent; the block is harmless there.)
+// Two SELECT-shaped statements CAN write and are blocked here:
+//
+//   1. MS SQL pass-through: OPENQUERY / OPENROWSET / OPENDATASOURCE appear
+//      inside a SELECT but can execute ARBITRARY remote SQL (including INSERT/
+//      UPDATE/DELETE) on a linked server. (HANA has no equivalent; harmless
+//      there.)
+//   2. SELECT ... INTO <table> (MS SQL) CREATES and populates a table — a
+//      write/DDL disguised as a read. HANA's SELECT ... INTO :var (scalar
+//      assignment inside a block) is a genuine read and stays allowed.
+//
+// Both checks run against the comment-stripped, quote-blanked SQL so they
+// can't be evaded with an inline comment (OPENQUERY/**/(...)) or a keyword
+// hidden inside a string literal.
 // ============================================================================
 
 import { GuardrailResult, ParsedQuery } from '../../types/index.js';
+import { stripComments, blankQuotedSpans } from '../parser.js';
 
 /** MS SQL pass-through table functions that can run arbitrary remote SQL. */
-const PASS_THROUGH_RE = /\b(OPENQUERY|OPENROWSET|OPENDATASOURCE)\s*\(/i;
+const PASS_THROUGH_RE = /\b(OPENQUERY|OPENROWSET|OPENDATASOURCE)\b/i;
+
+/** SELECT ... INTO <target>. Captures the first char of the target. */
+const SELECT_INTO_RE = /\bINTO\s+(\S)/i;
 
 export function evaluateSelect(parsed: ParsedQuery): GuardrailResult {
-  const match = PASS_THROUGH_RE.exec(parsed.rawSql);
-  if (match) {
+  // Neutralise comments and quoted spans so neither check can be evaded.
+  const scan = blankQuotedSpans(stripComments(parsed.rawSql));
+
+  const passThrough = PASS_THROUGH_RE.exec(scan);
+  if (passThrough) {
     return {
       allowed: false,
       reason:
-        `${match[1].toUpperCase()} is not permitted — it can execute arbitrary pass-through SQL ` +
+        `${passThrough[1].toUpperCase()} is not permitted — it can execute arbitrary pass-through SQL ` +
         `(including writes) on a linked/remote server, bypassing read-only enforcement.`,
       rule: 'passThroughBlock',
+    };
+  }
+
+  // SELECT ... INTO <table> writes; SELECT ... INTO :var (HANA scalar) does not.
+  const into = SELECT_INTO_RE.exec(scan);
+  if (into && into[1] !== ':') {
+    return {
+      allowed: false,
+      reason:
+        'SELECT ... INTO is not permitted — it creates and writes a table, ' +
+        'which is a write operation this read-only server does not allow. ' +
+        '(HANA SELECT ... INTO :variable is fine and is not what was detected.)',
+      rule: 'selectIntoBlock',
     };
   }
 

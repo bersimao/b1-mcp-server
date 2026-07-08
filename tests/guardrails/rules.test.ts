@@ -388,8 +388,43 @@ describe('pass-through blocklist (SELECT-disguised writes)', () => {
     expect(r.allowed).toBe(false);
   });
 
+  it('blocks OPENQUERY even when an inline comment splits it from its args', () => {
+    // The DB treats OPENQUERY/**/( as OPENQUERY( — the guardrail must too.
+    const r = validate("SELECT * FROM OPENQUERY/**/(LINKED, 'DELETE FROM ORDR')");
+    expect(r.allowed).toBe(false);
+    expect(r.rule).toBe('passThroughBlock');
+  });
+
   it('allows a normal SELECT that does not use pass-through', () => {
     const r = validate('SELECT * FROM ORDR WHERE "DocEntry" = 1');
+    expect(r.allowed).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SELECT ... INTO — a write/DDL disguised as a read (MS SQL)
+// ---------------------------------------------------------------------------
+
+describe('SELECT ... INTO blocklist', () => {
+  it('blocks SELECT ... INTO <table> (MSSQL table creation)', () => {
+    const r = validate('SELECT * INTO EvilCopy FROM ORDR');
+    expect(r.allowed).toBe(false);
+    expect(r.rule).toBe('selectIntoBlock');
+  });
+
+  it('blocks SELECT ... INTO even when split by an inline comment', () => {
+    const r = validate('SELECT * INTO/**/EvilCopy FROM ORDR');
+    expect(r.allowed).toBe(false);
+    expect(r.rule).toBe('selectIntoBlock');
+  });
+
+  it('allows HANA SELECT ... INTO :variable (scalar assignment, not a write)', () => {
+    const r = validate('SELECT "DocEntry" INTO :v FROM ORDR WHERE "DocNum" = 1');
+    expect(r.allowed).toBe(true);
+  });
+
+  it('allows a SELECT where "INTO" only appears inside a string literal', () => {
+    const r = validate("SELECT 'load INTO warehouse' AS note FROM ORDR");
     expect(r.allowed).toBe(true);
   });
 });

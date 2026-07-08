@@ -203,6 +203,47 @@ describe('detectOperation', () => {
     )).toBe(OperationType.DROP);
   });
 
+  // Block classifier must not be fooled by a trailing dummy SELECT.
+  // A block that contains a write/exec/DDL keyword must classify as that
+  // dangerous op, never as the harmless SELECT it also contains.
+  it('classifies a block hiding CALL behind a trailing SELECT as EXEC', () => {
+    expect(detectOperation(
+      'DO BEGIN CALL "SOME_WRITE_PROC"(); SELECT 1 FROM DUMMY; END'
+    )).toBe(OperationType.EXEC);
+  });
+
+  it('classifies a block hiding TRUNCATE behind a trailing SELECT as OTHER', () => {
+    expect(detectOperation(
+      'DO BEGIN TRUNCATE TABLE "MYLOG"; SELECT 1 FROM DUMMY; END'
+    )).toBe(OperationType.OTHER);
+  });
+
+  it('classifies a block hiding CREATE behind a trailing SELECT as CREATE', () => {
+    expect(detectOperation(
+      'DO BEGIN CREATE TABLE FOO (a INT); SELECT 1 FROM DUMMY; END'
+    )).toBe(OperationType.CREATE);
+  });
+
+  it('classifies a block hiding MERGE behind a trailing SELECT as OTHER', () => {
+    expect(detectOperation(
+      'BEGIN MERGE INTO T USING S ON T.id = S.id; SELECT 1; END'
+    )).toBe(OperationType.OTHER);
+  });
+
+  it('still classifies a read-only block (only SELECT) as SELECT', () => {
+    expect(detectOperation(
+      'DO BEGIN SELECT 1 FROM DUMMY; END'
+    )).toBe(OperationType.SELECT);
+  });
+
+  it('does not treat a dangerous keyword inside quoted text as a block write', () => {
+    // "CALL" here lives inside a string literal and a quoted identifier — the
+    // block is a genuine read and must stay classified as SELECT.
+    expect(detectOperation(
+      'DO BEGIN SELECT * FROM "@CALL_LOG" WHERE "Note" = \'please CALL support\'; END'
+    )).toBe(OperationType.SELECT);
+  });
+
   // Case insensitivity
   it('is case-insensitive', () => {
     expect(detectOperation('select * from ordr')).toBe(OperationType.SELECT);

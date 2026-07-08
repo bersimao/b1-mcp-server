@@ -98,6 +98,54 @@ export function stripComments(sql: string): string {
 }
 
 /**
+ * Replaces the CONTENT of string literals ('...'), quoted identifiers
+ * ("...") and bracketed identifiers ([...]) with spaces, leaving the quote
+ * characters and everything else in place. Positions/length are preserved.
+ *
+ * Used before keyword scanning so a keyword that appears inside quoted text
+ * (a string value or an identifier like "@UPDATE_LOG") is never mistaken for
+ * an actual SQL keyword.
+ */
+export function blankQuotedSpans(sql: string): string {
+  let out = '';
+  let i = 0;
+
+  while (i < sql.length) {
+    const ch = sql[i];
+
+    if (ch === '\'' || ch === '"') {
+      const quote = ch;
+      out += ch;
+      i++;
+      while (i < sql.length) {
+        if (sql[i] === quote) {
+          // Escaped quote ('' or "") — stays inside the span
+          if (i + 1 < sql.length && sql[i + 1] === quote) { out += '  '; i += 2; continue; }
+          break;
+        }
+        out += ' ';
+        i++;
+      }
+      if (i < sql.length) { out += quote; i++; } // closing quote
+      continue;
+    }
+
+    if (ch === '[') {
+      out += ch;
+      i++;
+      while (i < sql.length && sql[i] !== ']') { out += ' '; i++; }
+      if (i < sql.length) { out += ']'; i++; } // closing bracket
+      continue;
+    }
+
+    out += ch;
+    i++;
+  }
+
+  return out;
+}
+
+/**
  * Reads the full word (\w+) starting at position `i` of an uppercased SQL
  * string. Assumes the caller already verified `i` is at a word boundary.
  */
@@ -260,8 +308,8 @@ export function detectOperation(sql: string): OperationType {
   }
 
   // Handle DO BEGIN (HANA) and bare BEGIN (MSSQL) instruction blocks
-  if (upper.startsWith('DO') || upper.startsWith('BEGIN')) {
-    // Could contain anything inside — need to find the real operation
+  if (/^DO\b/.test(upper) || /^BEGIN\b/.test(upper)) {
+    // Could contain anything inside — classify by the most dangerous inner op
     return detectOperationInsideBlock(cleaned);
   }
 
@@ -336,16 +384,38 @@ function findOperationAfterCte(sql: string): OperationType {
 }
 
 /**
- * For DO BEGIN...END blocks, detect the most dangerous operation inside.
- * Priority: DROP > DELETE > UPDATE > INSERT > SELECT > OTHER
+ * For DO BEGIN...END / BEGIN...END blocks, classify the block by the most
+ * dangerous statement inside it.
+ *
+ * SECURITY: a block must NOT be classifiable as a harmless SELECT just because
+ * it happens to contain a SELECT. Every data-changing, procedural or DDL
+ * keyword is checked FIRST; only a block that contains a SELECT and none of
+ * those keywords is treated as read-only. This closes the bypass where a
+ * write/exec (e.g. CALL a_writing_proc(); ... ; SELECT 1 FROM DUMMY) is hidden
+ * behind a trailing dummy SELECT.
+ *
+ * Keywords are matched against the block with string literals and quoted
+ * identifiers blanked out, so a keyword inside quoted text is never counted.
+ * Priority: DROP > DELETE > UPDATE > INSERT > CREATE > ALTER > EXEC/CALL >
+ * (MERGE/TRUNCATE/GRANT/REVOKE/RENAME → OTHER) > SELECT > OTHER.
  */
 function detectOperationInsideBlock(sql: string): OperationType {
-  const upper = sql.toUpperCase();
+  const upper = blankQuotedSpans(sql).toUpperCase();
 
-  if (/\bDROP\b/.test(upper))   return OperationType.DROP;
-  if (/\bDELETE\b/.test(upper)) return OperationType.DELETE;
-  if (/\bUPDATE\b/.test(upper)) return OperationType.UPDATE;
-  if (/\bINSERT\b/.test(upper)) return OperationType.INSERT;
+  if (/\bDROP\b/.test(upper))                 return OperationType.DROP;
+  if (/\bDELETE\b/.test(upper))               return OperationType.DELETE;
+  if (/\bUPDATE\b/.test(upper))               return OperationType.UPDATE;
+  if (/\bINSERT\b/.test(upper))               return OperationType.INSERT;
+  if (/\bCREATE\b/.test(upper))               return OperationType.CREATE;
+  if (/\bALTER\b/.test(upper))                return OperationType.ALTER;
+  if (/\b(?:CALL|EXEC|EXECUTE)\b/.test(upper)) return OperationType.EXEC;
+
+  // Statements with no dedicated OperationType that still must never run on a
+  // read-only server. Classified as OTHER so the default-deny path blocks them.
+  if (/\b(?:MERGE|TRUNCATE|GRANT|REVOKE|RENAME|REPLACE)\b/.test(upper)) {
+    return OperationType.OTHER;
+  }
+
   if (/\bSELECT\b/.test(upper)) return OperationType.SELECT;
 
   return OperationType.OTHER;
