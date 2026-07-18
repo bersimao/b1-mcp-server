@@ -412,7 +412,14 @@ function detectOperationInsideBlock(sql: string): OperationType {
 
   // Statements with no dedicated OperationType that still must never run on a
   // read-only server. Classified as OTHER so the default-deny path blocks them.
-  if (/\b(?:MERGE|TRUNCATE|GRANT|REVOKE|RENAME|REPLACE)\b/.test(upper)) {
+  //   - UPSERT / REPLACE  : HANA insert-or-update (synonyms). REPLACE also
+  //                         doubles as a string function, but a read-only block
+  //                         has no reason to run either, so both are denied.
+  //   - IMPORT / EXPORT   : HANA bulk data movement (IMPORT writes rows).
+  //   - WRITETEXT /
+  //     UPDATETEXT        : MS SQL legacy BLOB writes. \bUPDATE\b above does not
+  //                         match UPDATETEXT (no word boundary), so it lands here.
+  if (/\b(?:MERGE|TRUNCATE|UPSERT|REPLACE|IMPORT|EXPORT|GRANT|REVOKE|RENAME|WRITETEXT|UPDATETEXT)\b/.test(upper)) {
     return OperationType.OTHER;
   }
 

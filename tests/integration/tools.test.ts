@@ -205,6 +205,70 @@ describe('execute_sql integration', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain('OPENQUERY');
   });
+
+  // --- Regression: guardrail bypasses found during the security audit ---
+
+  it('blocks HANA UPSERT hidden behind a trailing SELECT in a block', async () => {
+    const result = await handlers.get('execute_sql')!({
+      query: 'DO BEGIN UPSERT "@MY_UDT" ("Code","Val") VALUES (\'1\',\'x\'); SELECT 1 FROM DUMMY; END',
+    });
+    expect(result.isError).toBe(true);
+    expect(mockDb.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it('blocks HANA REPLACE (upsert synonym) hidden behind a trailing SELECT in a block', async () => {
+    const result = await handlers.get('execute_sql')!({
+      query: 'DO BEGIN REPLACE "@MY_UDT" ("Code") VALUES (\'1\'); SELECT 1 FROM DUMMY; END',
+    });
+    expect(result.isError).toBe(true);
+    expect(mockDb.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it('blocks HANA IMPORT hidden behind a trailing SELECT in a block', async () => {
+    const result = await handlers.get('execute_sql')!({
+      query: "DO BEGIN IMPORT \"@X\" FROM '/tmp/x'; SELECT 1 FROM DUMMY; END",
+    });
+    expect(result.isError).toBe(true);
+    expect(mockDb.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it('blocks MS SQL WRITETEXT hidden behind a trailing SELECT in a block', async () => {
+    const result = await handlers.get('execute_sql')!({
+      query: 'BEGIN WRITETEXT ORDR.Comments @p 0x00; SELECT 1; END',
+    });
+    expect(result.isError).toBe(true);
+    expect(mockDb.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it('blocks a DELETE chained onto a SELECT WITHOUT a semicolon (T-SQL batch)', async () => {
+    const result = await handlers.get('execute_sql')!({ query: 'SELECT * FROM ORDR WHERE 1=0 DELETE FROM ORDR' });
+    expect(result.isError).toBe(true);
+    expect(mockDb.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it('blocks a DROP chained onto a SELECT WITHOUT a semicolon (T-SQL batch)', async () => {
+    const result = await handlers.get('execute_sql')!({ query: 'SELECT 1 DROP TABLE ORDR' });
+    expect(result.isError).toBe(true);
+    expect(mockDb.executeQuery).not.toHaveBeenCalled();
+  });
+
+  it('still allows a legitimate SELECT that uses the REPLACE string function', async () => {
+    (mockDb.executeQuery as any).mockResolvedValue([{ Cleaned: 'abc' }]);
+    const result = await handlers.get('execute_sql')!({
+      query: 'SELECT REPLACE("ItemName", \'-\', \'\') AS "Cleaned" FROM OITM',
+    });
+    expect(result.isError).toBeUndefined();
+    expect(mockDb.executeQuery).toHaveBeenCalled();
+  });
+
+  it('still allows a legitimate read-only HANA block (DECLARE + SELECTs)', async () => {
+    (mockDb.executeQuery as any).mockResolvedValue([{ cnt: 3 }]);
+    const result = await handlers.get('execute_sql')!({
+      query: 'DO BEGIN DECLARE lv INT = 3; SELECT :lv AS "cnt" FROM DUMMY; SELECT COUNT(*) AS "n" FROM "@MY_UDT"; END',
+    });
+    expect(result.isError).toBeUndefined();
+    expect(mockDb.executeQuery).toHaveBeenCalled();
+  });
 });
 
 
