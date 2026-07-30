@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { validateAnySql } from '../guardrails/index.js';
 import { validateInput } from '../sanitisation/inputValidator.js';
+import { formatResult } from './formatResult.js';
 import { DbAdapter } from '../db/adapter.js';
 import { AuditLogger } from '../logging/auditLogger.js';
 import { Config } from '../config/settings.js';
@@ -79,7 +80,7 @@ Rules enforced server-side:
       try {
         const result = await adapter.executeSql(query);
         auditEntry.durationMs = result.durationMs;
-        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] ${result.rowCount} row(s) returned.\n${JSON.stringify(result.data, null, 2)}` }] };
+        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] ${result.rowCount} row(s) returned.\n${formatResult(result.data, config)}` }] };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         auditEntry.error = errorMsg;

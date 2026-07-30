@@ -16,6 +16,9 @@ const NUMERIC_VARS = [
   'MCP_MAX_QUERY_LENGTH',
   'MCP_RATE_LIMIT_MAX_CALLS',
   'MCP_RATE_LIMIT_WINDOW_MS',
+  'MCP_QUERY_TIMEOUT_MS',
+  'MCP_MAX_RESULT_ROWS',
+  'MCP_MAX_RESULT_CHARS',
   'MCP_LOG_LEVEL',
 ];
 
@@ -44,18 +47,37 @@ describe('loadConfig — numeric limits fail closed', () => {
     expect(config.maxQueryLength).toBe(8000);
     expect(config.rateLimitMaxCalls).toBe(60);
     expect(config.rateLimitWindowMs).toBe(60000);
+    expect(config.queryTimeoutMs).toBe(60000);
+    expect(config.maxResultRows).toBe(500);
+    expect(config.maxResultChars).toBe(100000);
   });
 
   it('accepts valid overrides', () => {
     process.env.MCP_MAX_QUERY_LENGTH = '500';
     process.env.MCP_RATE_LIMIT_MAX_CALLS = '10';
     process.env.MCP_RATE_LIMIT_WINDOW_MS = '5000';
+    process.env.MCP_QUERY_TIMEOUT_MS = '15000';
+    process.env.MCP_MAX_RESULT_ROWS = '50';
+    process.env.MCP_MAX_RESULT_CHARS = '2000';
 
     const config = loadConfig();
     expect(config.maxQueryLength).toBe(500);
     expect(config.rateLimitMaxCalls).toBe(10);
     expect(config.rateLimitWindowMs).toBe(5000);
+    expect(config.queryTimeoutMs).toBe(15000);
+    expect(config.maxResultRows).toBe(50);
+    expect(config.maxResultChars).toBe(2000);
   });
+
+  it.each(['abc', 'NaN', '0', '-1', ''])(
+    'falls back to the 60s default for MCP_QUERY_TIMEOUT_MS="%s"',
+    (value) => {
+      process.env.MCP_QUERY_TIMEOUT_MS = value;
+      // A garbage timeout must never mean "no ceiling" — that is how a runaway
+      // join gets ten minutes of production CPU.
+      expect(loadConfig().queryTimeoutMs).toBe(60000);
+    },
+  );
 
   it.each(['sixty', '', '   ', 'NaN', '12abc', 'Infinity', '1.5', '0', '-1'])(
     'falls back to the default for MCP_RATE_LIMIT_MAX_CALLS="%s"',

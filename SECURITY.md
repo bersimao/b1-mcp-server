@@ -124,7 +124,22 @@ Stated explicitly, because a security document that omits them is worse than non
 1. **No authentication at the MCP layer.** Anything that can speak stdio to this process can list profiles and connect to any of them, production included. That is inherent to local stdio MCP: the OS user account and the permissions on `connections.json` are the actual boundary.
 2. **Service Layer `PATCH` is an unrestricted write.** Any entity, any field the SL user may change, with a free-text OData URL. There is no entity allow-list. Combined with the prompt-injection surface above, this is the most significant remaining exposure.
 3. **`get_schema_info` does not pass through the guardrail engine.** It is the one SQL path with no net under it. The queries are fixed catalog SELECTs and the caller's `filter` is bound as a `?` parameter, never interpolated (`tests/tools/schemaIntrospection.test.ts` fails if that changes), so it carries no injection surface of its own — but it is still SQL that no rule inspects.
-4. **Read-only is not the same as harmless.** Lock hints (`WITH (UPDLOCK, HOLDLOCK)`, `TABLOCKX`) pass as reads and take locks on a pool that does not commit. Expensive joins are not cost-limited, and results have no row or byte cap, so one query can dump a whole table — `OUSR`, `SYS.USERS` — into the model's context.
+4. **Read-only is not the same as harmless.** Partly addressed: lock-taking table hints (`UPDLOCK`, `XLOCK`, `TABLOCK`, `TABLOCKX`, `HOLDLOCK`, `SERIALIZABLE`, `REPEATABLEREAD`) are now denied — they would hold locks on a pool that never commits, blocking real B1 users. `NOLOCK`, `READPAST`, `ROWLOCK` and `PAGLOCK` stay allowed: they take no locks and add no duration. HANA's `SELECT ... FOR UPDATE` is caught by the write-keyword fail-safe. Results are capped at `MCP_MAX_RESULT_ROWS` rows then `MCP_MAX_RESULT_CHARS` characters, with truncation always announced. Query cost is bounded by `MCP_QUERY_TIMEOUT_MS` (default 60 s), handed to `DirectDb.init()`: HANA maps it to `communicationTimeout`, MS SQL to `connectionTimeout` + `requestTimeout`. This is the only limit that stops the *work* rather than the *output* — the row cap applies after the database has already computed the result.
+
+Both engines were measured against real servers, with a CPU-only query calibrated to outlast the ceiling. In each case the statement was confirmed gone from the engine's own running-request view well before its work would have finished — so it is genuinely killed, not merely abandoned by the client:
+
+| | HANA (`SBO_HANA_DEV`, `hana-client` 2.21) | MS SQL (`SBO_MSSQL_DEV`, `mssql` 6.3 / `tedious`) |
+|---|---|---|
+| Ceiling maps to | `communicationTimeout` | `connectionTimeout` + `requestTimeout` |
+| ~20 s query, ceiling | aborted at 2 s | aborted at 3 s |
+| Server-side, checked in | `SYS.M_ACTIVE_STATEMENTS` → gone at +5 s | `sys.dm_exec_requests` → gone at +6 s |
+| Mechanism | drops the socket | cancels the request (attention packet) |
+| Error the caller sees | `Connection down: [89012] Socket recv timeout` | `Timeout: Request failed to complete in Nms` |
+| Pool after 12 timeouts | 25/25 clean — `hana-client` silently reconnects | 25/25 clean — connection stays usable |
+
+The HANA error text is the trap: an aborted query reports a dead connection, with no hint that a timeout caused it. MS SQL says plainly what happened.
+
+**Still open:** the ceiling is wall-clock, not cost. A cartesian product still gets the full 60 s of production CPU before it is cut; a true cost governor (`QUERY_GOVERNOR_COST_LIMIT`, HANA workload classes) would reject it on the optimiser's estimate, before execution.
 5. **The parser is not a full SQL parser.** It is a deliberately small classifier that denies by default. Its correctness rests on the quote/comment scanners; any change there must keep `tests/guardrails/quotedSpanEvasion.test.ts` green.
 
 ## Reporting vulnerabilities

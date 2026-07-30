@@ -51,6 +51,24 @@ const SELECT_INTO_RE = /\bINTO\s+(\S)/i;
 const FORBIDDEN_IN_READ_RE =
   /\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|MERGE|UPSERT|GRANT|REVOKE|RENAME|EXEC|EXECUTE|CALL|WRITETEXT|UPDATETEXT)\b/i;
 
+/**
+ * MS SQL table hints that TAKE or HOLD locks.
+ *
+ * Read-only is not the same as harmless. This server runs on a shared DirectDb
+ * pool that never issues COMMIT, so any lock a query acquires is held until the
+ * connection is recycled — long after the tool call returned. A SELECT with
+ * UPDLOCK or TABLOCKX blocks real B1 users on production tables while looking
+ * like an innocent read in the audit log.
+ *
+ * Only the hints that acquire or extend lock duration are listed. Deliberately
+ * NOT blocked: NOLOCK / READUNCOMMITTED (take no locks), READPAST (skips locked
+ * rows), and PAGLOCK / ROWLOCK (granularity only — no extra duration).
+ *
+ * HANA's equivalent, "SELECT ... FOR UPDATE", needs no entry here: the bare
+ * UPDATE keyword is already denied by FORBIDDEN_IN_READ_RE above.
+ */
+const LOCK_HINT_RE = /\b(UPDLOCK|XLOCK|TABLOCKX|TABLOCK|HOLDLOCK|SERIALIZABLE|REPEATABLEREAD)\b/i;
+
 export function evaluateSelect(parsed: ParsedQuery): GuardrailResult {
   // Neutralise comments and quoted spans so neither check can be evaded.
   const scan = blankQuotedSpans(stripComments(parsed.rawSql));
@@ -91,6 +109,20 @@ export function evaluateSelect(parsed: ParsedQuery): GuardrailResult {
         `(including without a semicolon, which some drivers still run as multiple statements). ` +
         `If you need this operation, hand the SQL to a human to run in a real DB client.`,
       rule: 'writeKeywordInRead',
+    };
+  }
+
+  // Lock-taking table hints: a read that blocks other sessions is still an outage.
+  const lockHint = LOCK_HINT_RE.exec(scan);
+  if (lockHint) {
+    return {
+      allowed: false,
+      reason:
+        `The '${lockHint[1].toUpperCase()}' table hint is not permitted. It acquires or holds locks, ` +
+        `and this server runs on a shared connection pool that never commits — the locks would ` +
+        `outlive the query and block real B1 users. Remove the hint, or run the statement in a ` +
+        `real DB client where the transaction ends.`,
+      rule: 'lockHintBlock',
     };
   }
 

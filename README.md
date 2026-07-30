@@ -115,6 +115,9 @@ All optional.
 | `MCP_MAX_QUERY_LENGTH` | `8000` | Max SQL length in characters |
 | `MCP_RATE_LIMIT_MAX_CALLS` | `60` | Max calls per tool per window |
 | `MCP_RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit window |
+| `MCP_QUERY_TIMEOUT_MS` | `60000` | Statement ceiling. A query still running at this point is aborted. Raise it if a legitimate report needs longer |
+| `MCP_MAX_RESULT_ROWS` | `500` | Max rows returned to the model; extra rows are cut and announced |
+| `MCP_MAX_RESULT_CHARS` | `100000` | Max characters of result JSON, applied after the row cap |
 | `MCP_DRY_RUN` | `false` | If `true`, validate but don't execute |
 
 The numeric limits above must be positive integers. Anything else (a typo, an

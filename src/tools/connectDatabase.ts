@@ -214,6 +214,7 @@ Use "list" as the query to reload and list all available profiles.`,
             dbType: profile.dbType,
             username: profile.dbUser,
             password: profile.dbPassword,
+            timeoutMs: config.queryTimeoutMs,
           });
           const check = await adapter.checkConnection();
           dbConnected = check.connected;

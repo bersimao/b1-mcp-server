@@ -41,6 +41,8 @@ export interface DirectDbInitConfig {
   databaseType: string;
   username: string;
   password: string;
+  /** Milliseconds. HANA → communicationTimeout; MS SQL → connection+requestTimeout. */
+  timeout?: number;
 }
 
 export interface DirectDbModule {
@@ -87,6 +89,11 @@ export class DbAdapter {
     dbType: DbType;
     username: string;
     password: string;
+    /**
+     * Cost ceiling for every statement on this connection, in milliseconds.
+     * Omitted → DirectDb's own default of 600 000 ms (ten minutes).
+     */
+    timeoutMs?: number;
   }): Promise<void> {
     const databaseType = config.dbType === 'hana' ? 'HANA' : 'SQL';
 
@@ -96,6 +103,7 @@ export class DbAdapter {
       databaseType,
       username: config.username,
       password: config.password,
+      timeout: config.timeoutMs,
     });
 
     this.dbName = config.database;

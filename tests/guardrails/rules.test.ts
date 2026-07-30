@@ -428,3 +428,51 @@ describe('SELECT ... INTO blocklist', () => {
     expect(r.allowed).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Lock-taking table hints — a read that blocks other B1 sessions
+// ---------------------------------------------------------------------------
+
+describe('lock hint blocklist', () => {
+  for (const hint of ['UPDLOCK', 'XLOCK', 'TABLOCK', 'TABLOCKX', 'HOLDLOCK', 'SERIALIZABLE', 'REPEATABLEREAD']) {
+    it(`blocks a SELECT carrying the ${hint} hint`, () => {
+      const r = validate(`SELECT * FROM ORDR WITH (${hint})`);
+      expect(r.allowed).toBe(false);
+      expect(r.rule).toBe('lockHintBlock');
+    });
+  }
+
+  it('blocks a lock hint combined with a harmless one', () => {
+    const r = validate('SELECT * FROM ORDR WITH (ROWLOCK, UPDLOCK)');
+    expect(r.allowed).toBe(false);
+    expect(r.rule).toBe('lockHintBlock');
+  });
+
+  it('blocks a lock hint split by an inline comment', () => {
+    const r = validate('SELECT * FROM ORDR WITH (UPD/**/LOCK, HOLDLOCK)');
+    expect(r.allowed).toBe(false);
+    expect(r.rule).toBe('lockHintBlock');
+  });
+
+  it('blocks HANA SELECT ... FOR UPDATE (via the write-keyword fail-safe)', () => {
+    const r = validate('SELECT * FROM ORDR WHERE "DocEntry" = 1 FOR UPDATE');
+    expect(r.allowed).toBe(false);
+    expect(r.rule).toBe('writeKeywordInRead');
+  });
+
+  it('allows NOLOCK — it takes no locks', () => {
+    const r = validate('SELECT * FROM ORDR WITH (NOLOCK)');
+    expect(r.allowed).toBe(true);
+  });
+
+  it('allows ROWLOCK / PAGLOCK / READPAST — granularity only, no held locks', () => {
+    expect(validate('SELECT * FROM ORDR WITH (ROWLOCK)').allowed).toBe(true);
+    expect(validate('SELECT * FROM ORDR WITH (PAGLOCK)').allowed).toBe(true);
+    expect(validate('SELECT * FROM ORDR WITH (READPAST)').allowed).toBe(true);
+  });
+
+  it('allows a hint name that only appears inside a string literal', () => {
+    const r = validate("SELECT 'UPDLOCK' AS note FROM ORDR");
+    expect(r.allowed).toBe(true);
+  });
+});

@@ -29,6 +29,15 @@ export interface Config {
   /** Rate limit: window size in milliseconds. */
   rateLimitWindowMs: number;
 
+  /** Statement/communication timeout handed to DirectDb.init(), in milliseconds. */
+  queryTimeoutMs: number;
+
+  /** Max rows of a result set rendered back to the model. */
+  maxResultRows: number;
+
+  /** Max characters of rendered result JSON, after the row cap. */
+  maxResultChars: number;
+
   /** Dry-run mode: validate queries but don't execute them. */
   dryRun: boolean;
 }
@@ -92,6 +101,21 @@ export function loadConfig(): Config {
     rateLimitMaxCalls: positiveIntEnv('MCP_RATE_LIMIT_MAX_CALLS', 60),
 
     rateLimitWindowMs: positiveIntEnv('MCP_RATE_LIMIT_WINDOW_MS', 60 * 1000),
+
+    // Cost ceiling. The row cap only acts once the database has already paid the
+    // bill, so an expensive join still burns production CPU. This is the only
+    // lever that stops the work itself: DirectDb.init() maps it to HANA's
+    // communicationTimeout and to MS SQL's connectionTimeout + requestTimeout.
+    // DirectDb's own default is 600 000 ms — ten minutes of a runaway join on a
+    // production box, with the model blocked the whole time.
+    queryTimeoutMs: positiveIntEnv('MCP_QUERY_TIMEOUT_MS', 60_000),
+
+    // Result caps. A SELECT with no WHERE can otherwise dump OUSR or SYS.USERS
+    // straight into the model's context. 500 rows clears every realistic B1
+    // exploration (OITM has 447 columns); 100k chars bounds a wide-row result.
+    maxResultRows: positiveIntEnv('MCP_MAX_RESULT_ROWS', 500),
+
+    maxResultChars: positiveIntEnv('MCP_MAX_RESULT_CHARS', 100_000),
 
     dryRun: process.env.MCP_DRY_RUN === 'true',
   };

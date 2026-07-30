@@ -9,6 +9,7 @@ import { AuditLogger } from '../logging/auditLogger.js';
 import { Config } from '../config/settings.js';
 import { OperationType, DbType } from '../types/index.js';
 import { RateLimiter } from '../rateLimit/rateLimiter.js';
+import { formatResult } from './formatResult.js';
 
 interface SchemaQuery {
   query: string;
@@ -82,7 +83,7 @@ IMPORTANT: Before calling this tool, you MUST confirm which database the user in
 
       try {
         const result = await adapter.executeSelect(query, params);
-        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] ${result.rowCount} ${objectType} found.\n${JSON.stringify(result.data, null, 2)}` }] };
+        return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] ${result.rowCount} ${objectType} found.\n${formatResult(result.data, config)}` }] };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Schema query failed: ${errorMsg}` }], isError: true };
