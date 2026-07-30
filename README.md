@@ -6,20 +6,17 @@ both the database (HANA / MS SQL) and the Service Layer OData API.
 
 ## Features
 
-- **7 MCP tools**: `connect_database`, `execute_sql`, `execute_sql_ai`,
-  `execute_procedure`, `execute_service_layer`, `get_schema_info`,
-  `check_connection`.
+- **5 MCP tools**: `connect_database`, `execute_sql`, `execute_service_layer`,
+  `get_schema_info`, `check_connection`.
 - **Multi-environment**: switch between client databases at runtime via named
   connection profiles. No restart needed.
-- **Server-side guardrails**: SAP table classification (CORE / USER / CUSTOM /
-  TEMP) with per-operation rules. INSERT/DELETE on SAP core tables blocked.
-  UPDATE on SAP core tables limited to `U_*` UDFs. DROP blocked outside
-  anonymous blocks. Anonymous blocks are also validated server-side (they no
-  longer bypass guardrails).
-- **Stored-procedure inspection**: SP source code is fetched and scanned for
-  prohibited DML before execution; results cached.
-- **AI-generated SQL is parameterised**: `execute_sql_ai` rejects queries
-  whose `?` placeholder count doesn't match the supplied parameter array.
+- **Read-only by design**: the SQL path executes only `SELECT`. Every
+  `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` is blocked server-side with no
+  confirmation bypass — writes are handed to a human to run in a real DB client.
+- **Server-side guardrails**: all SQL goes through the same validation whether
+  the user or the AI wrote it. Anonymous `DO BEGIN..END` blocks are classified
+  by the most dangerous statement inside them, so a write hidden behind a
+  trailing `SELECT` is still a write.
 - **Audit log**: every operation, allowed or denied, is recorded as JSON Lines.
 - **Rate limiting** per tool with sliding window.
 
@@ -116,24 +113,39 @@ All optional.
 | `MCP_AUDIT_LOG_PATH` | `~/.claude/logs/sps-mcp-audit.jsonl` | Audit log JSONL file. Empty disables file logging |
 | `MCP_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `MCP_MAX_QUERY_LENGTH` | `8000` | Max SQL length in characters |
-| `MCP_PROCEDURE_CACHE_TTL_MS` | `1800000` | SP inspection cache TTL |
-| `MCP_PROCEDURE_CACHE_MAX_SIZE` | `200` | SP inspection cache size |
 | `MCP_RATE_LIMIT_MAX_CALLS` | `60` | Max calls per tool per window |
 | `MCP_RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit window |
 | `MCP_DRY_RUN` | `false` | If `true`, validate but don't execute |
 
+The numeric limits above must be positive integers. Anything else (a typo, an
+empty value, `0`) is rejected at startup with a message on stderr and the
+default is used instead — a misconfigured limit never means "no limit".
+`MCP_LOG_LEVEL` behaves the same way, falling back to `info`.
+
 ## Guardrail summary
 
-| Operation | SAP_CORE (≤4 chars: ORDR, OITM, …) | SAP_USER (`@`-prefixed) | CUSTOM (>4 chars) | TEMP (`#` / `##`) |
-|---|---|---|---|---|
-| SELECT | allow | allow | allow | allow |
-| INSERT | block | confirm | allow | allow |
-| UPDATE | only `U_*` cols | allow | allow | allow |
-| DELETE | block | confirm | allow | allow |
-| DROP | block | block | block (outside `BEGIN..END`) | block (outside `BEGIN..END`) |
+The SQL path is **read-only**, so the live answer does not depend on which
+table you touch:
 
-EXEC / EXECUTE / CALL in raw SQL is always blocked — call the
-`execute_procedure` tool, which inspects the SP body before running it.
+| Operation | Any table (SAP core, UDT, custom, temp) |
+|---|---|
+| SELECT | allow |
+| INSERT / UPDATE / DELETE / DROP | block — run it yourself in a DB client |
+| CREATE / ALTER | block |
+| EXEC / EXECUTE / CALL | block — stored procedures cannot be run through this server |
+
+Also blocked: multi-statement queries (semicolons outside `BEGIN..END`),
+unterminated quotes or brackets, `OPENQUERY` / `OPENROWSET` / `OPENDATASOURCE`,
+and `SELECT ... INTO <table>`.
+
+Service Layer requests allow `GET` and `PATCH` only. `POST` / `PUT` / `DELETE`
+are blocked — note that `PATCH` **is** a write, and is the one write path the
+server permits.
+
+The per-table classification model (SAP_CORE / SAP_USER / CUSTOM / TEMP with
+per-operation rules) still exists in `src/guardrails/rules/` and is fully
+tested, but on the read-only server it is not reachable from the live path.
+See [SECURITY.md](./SECURITY.md) for the full model and its known limitations.
 
 ## Development
 

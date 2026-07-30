@@ -1,132 +1,132 @@
 # Security Model — sps-mcp-server
 
-This document describes the security architecture of sps-mcp-server, an MCP server that provides Claude Code with guarded access to SAP Business One databases.
+This document describes the security architecture of sps-mcp-server, an MCP server that gives an AI client guarded access to SAP Business One via the database (HANA / MS SQL) and the Service Layer OData API.
 
-## Threat Model
+It describes the server **as built**. Where a defence has a known limit, that limit is stated rather than omitted — see [Known limitations](#known-limitations).
 
-The primary threat is an AI model generating harmful SQL — intentionally or through prompt injection — that modifies or destroys SAP B1 data. The server acts as a security boundary between the AI and the database.
+## Threat model
 
-**Key assumption:** The AI is untrusted. Every query is validated as if it came from an adversary.
+The primary threat is an AI model issuing harmful SQL — deliberately, through a mistake, or because it was steered by prompt injection — against a production SAP B1 database. The server is the boundary between the AI and the data.
 
-## Defence Layers
+**Key assumption: the AI is untrusted.** Every statement is validated as if an adversary wrote it. The server never relies on the AI having pre-validated anything, and never rewrites a suspicious query into a safe one — it accepts a statement as-is or rejects it.
 
-### Layer 1 — Tool Separation
+A second, less obvious threat: **B1 field content is attacker-reachable**. Text a third party can write (an order remark arriving from a web shop, a business-partner free-text field) is returned by `execute_sql` straight into the model's context. Treat query results as untrusted input to the AI, not as data the AI can safely act on.
 
-Operations are separated into dedicated tools with distinct security profiles:
+## Posture: read-only on the SQL path
 
-| Tool | Operations | Risk Level |
-|------|-----------|------------|
-| `execute_query` | SELECT only | Low |
-| `execute_update` | UPDATE only | Medium |
-| `execute_insert` | INSERT only | Medium |
-| `execute_delete` | DELETE only | Medium (confirmation-gated) |
-| `execute_procedure` | SP calls | High (inspected) |
-| `get_schema_info` | Metadata | None |
+The DirectDb/SQL path executes **only** `SELECT`, plus anonymous blocks whose statements are all reads. `INSERT / UPDATE / DELETE / DROP / CREATE / ALTER / EXEC` are blocked at the guardrail with **no confirmation bypass** — there is no parameter, no flag and no phrasing that lets the AI through.
 
-The AI picks the tool, but the server enforces correct usage. An UPDATE through `execute_query` is rejected with a redirect message pointing to the correct tool.
+Writes are the human's job: the AI produces the SQL and a person runs it in a real DB client (HANA Studio / DBeaver / hdbsql), where `COMMIT` is guaranteed. This is deliberate — the shared `DirectDb` pool does not guarantee a commit and can leave orphaned, lock-holding transactions.
 
-### Layer 2 — Table Classification
+The Service Layer path allows `GET` and `PATCH`. `PATCH` is permitted because the Service Layer validates and commits atomically; `POST`, `PUT` and `DELETE` are blocked server-side.
 
-Every table is classified by its name:
+## Tools
 
-| Type | Pattern | Example | INSERT | UPDATE | DELETE | DROP |
-|------|---------|---------|--------|--------|--------|------|
-| **SAP_CORE** | ≤ 4 chars | ORDR, OITM, INV1 | Blocked | U_* only | Blocked | Blocked |
-| **SAP_USER** | @-prefixed | @MY_UDT | Confirmation | Allowed | Confirmation | Blocked |
-| **CUSTOM** | > 4 chars | MY_TABLE | Allowed | Allowed | Allowed | Block-scoped |
-| **TEMP** | # or ## prefixed | #temp | Allowed | Allowed | Allowed | Block-scoped |
+| Tool | Operations | Risk |
+|---|---|---|
+| `connect_database` | Switch active DB + Service Layer profile | Low — credentials never leave the process |
+| `execute_sql` | `SELECT` only (incl. read-only anonymous blocks) | Low |
+| `execute_service_layer` | OData `GET` / `PATCH` | **Medium — PATCH is a real write** |
+| `get_schema_info` | Catalog metadata | Low |
+| `check_connection` | Health pings | None |
 
-**SAP_CORE tables are the most protected.** SAP B1 manages these through its own DI API/Service Layer. Direct INSERT is permanently blocked. UPDATE is limited to User-Defined Fields (columns starting with `U_`). DELETE and DROP are permanently blocked.
+The AI chooses the tool; the server enforces what each one may do.
 
-**SAP_USER tables (@-prefixed UDTs) use a confirmation gate.** INSERT and DELETE on these tables are allowed but require explicit user confirmation before execution. The AI receives a confirmation prompt and must re-call the tool with `confirmed: true` after the user approves.
+## Defence layers
 
-### Layer 3 — SQL Parser & Guardrails
+### Layer 1 — Input validation
 
-A lightweight, security-focused SQL parser classifies every query:
+Rejects empty input, null bytes, and anything above `MCP_MAX_QUERY_LENGTH` (default 8000 characters) before the parser runs. Numeric limits fail **closed**: a malformed env var falls back to the default instead of producing `NaN`, which would have made every comparison false and silently disabled the limit.
 
-1. **Operation detection** — identifies the outermost SQL operation
-2. **Table extraction** — identifies all referenced tables (skips string literals)
-3. **SET column extraction** — for UPDATEs, identifies which columns are modified
-4. **Multi-statement detection** — blocks semicolon-separated queries (respects BEGIN...END blocks)
-5. **Block detection** — identifies DROP statements inside instruction blocks
+### Layer 2 — Malformed-quoting rejection
 
-**Design principle: deny by default.** Unrecognised operations are rejected. The parser does not try to understand every SQL construct — when in doubt, it classifies as OTHER (which is denied).
+SQL containing an unterminated `'`, `"` or `[` span is denied outright (`malformedSql`). An unclosed span blinds every scanner from that point to the end of the statement, so a write keyword after it would never be seen. Well-formed SQL never has one.
 
-### Layer 4 — UPDATE Sanitiser
+### Layer 3 — Comment stripping and quote blanking
 
-Plain-text UPDATEs (the raw SQL fallback path) go through 4 additional checks:
+Comments are removed and quoted spans blanked before any keyword scan, so a payload cannot hide behind `OPENQUERY/**/(...)` or inside a string literal.
 
-1. **Input validation** — rejects null bytes, non-printable characters, excessive length
-2. **Structure validation** — blocks UNION/INTERSECT/EXCEPT in UPDATE context
-3. **Dangerous pattern detection** — blocks xp_cmdshell, EXEC(, WAITFOR, OPENROWSET, sp_executesql, and other injection vectors
-4. **Comment blocking** — `--` and `/* */` are not allowed in UPDATE queries
+**Quoting is load-bearing here.** `'...'`, `"..."` and `[...]` spans (including `''` / `""` / `]]` escapes) are copied verbatim by the comment stripper: a `--` or `/*` inside an identifier is *data*, not a comment. Treating it as a comment would delete the rest of the statement from the guardrail's view while the database still executed it in full — and would leave the audit log recording only the harmless prefix. Regression payloads live in `tests/guardrails/quotedSpanEvasion.test.ts`.
 
-### Layer 5 — Stored Procedure Inspection
+### Layer 4 — Parsing and operation classification
 
-Before executing any stored procedure, the server:
+A lightweight, security-focused parser determines:
 
-1. Fetches the SP's source code from the database system catalog
-2. Extracts every DML statement from the body
-3. Validates each statement against the same table classification rules
-4. Blocks execution if ANY statement violates the rules
+1. **Operation type** — the outermost operation, looking past a CTE (`WITH ... AS (...) DELETE` is a DELETE, not a read).
+2. **Target tables** — referenced tables, ignoring string literals.
+3. **Multi-statement detection** — semicolons outside `BEGIN...END` are rejected. Block depth tracks `CASE...END` and HANA's two-token closers (`END IF`, `END WHILE`, …) so a legitimate block is not mistaken for two statements.
+4. **Block classification** — a `DO BEGIN..END` (HANA) or `BEGIN..END` (MS SQL) block is classified by the **most dangerous statement inside it**. A write hidden behind a trailing dummy `SELECT` is still a write.
 
-Results are cached by SHA-256 hash of the procedure body (30-minute TTL) to avoid redundant inspection.
+**Design principle: deny by default.** Unrecognised operations are classified `OTHER` and rejected.
 
-### Layer 6 — Structured JSON (Primary Path)
+### Layer 5 — Read-only enforcement
 
-The preferred input path uses structured JSON rather than raw SQL:
+`validateAnySql()` permits only `SELECT`. Everything else is denied with a message telling the AI to hand the SQL to a human rather than retry.
 
-```json
-{
-  "table": "ORDR",
-  "set": { "U_Status": "done" },
-  "where": [{ "field": "DocEntry", "operator": "=", "value": 1 }]
-}
-```
+### Layer 6 — Writes disguised as reads
 
-The server builds parameterised SQL from the JSON. This eliminates SQL parsing vulnerabilities entirely — no CASE expression ambiguity, no comment hiding, no quoting tricks.
+Three checks catch statements that look like reads but are not, all running on comment-stripped, quote-blanked SQL:
 
-### Layer 7 — User Confirmation Gate
+1. **Pass-through functions** — `OPENQUERY` / `OPENROWSET` / `OPENDATASOURCE` can execute arbitrary SQL, including writes, on a linked server.
+2. **`SELECT ... INTO <table>`** — creates and populates a table in MS SQL. HANA's `SELECT ... INTO :variable` (scalar assignment) is a genuine read and stays allowed.
+3. **Write-keyword fail-safe** — anything classified as a read that still contains a bare write/DDL/exec keyword is denied. This closes statement chaining that carries **no semicolon** (T-SQL runs `SELECT * FROM ORDR WHERE 1=0 DELETE FROM ORDR` as two statements) and backstops any gap in the block scan. `REPLACE` is excluded because it is a common string function; its upsert spelling has no read classification and is denied upstream.
 
-Operations on SAP User-Defined Tables (UDTs) that could modify data require explicit user confirmation:
+### Layer 7 — Table classification
 
-- **INSERT on SAP_USER tables**: The tool returns a confirmation prompt instead of executing. The AI must show the prompt to the user and re-call with `confirmed: true`.
-- **DELETE on SAP_USER tables**: Same confirmation flow via the `execute_delete` tool.
+Every table is classified by name — **SAP_CORE** (≤ 4 chars: `ORDR`, `OITM`, `INV1`), **SAP_USER** (`@`-prefixed UDTs), **CUSTOM** (> 4 chars), **TEMP** (`#` / `##`).
 
-This prevents the AI from autonomously modifying UDT data without the user's knowledge. The confirmation is enforced server-side — the `confirmed` parameter is checked after guardrails pass, so it cannot bypass security rules.
+On the live read-only server this classification feeds the audit log; the per-operation rules it drives (`guardrails/rules/`) are reachable only through the internal `validate()` helper used by the unit tests, because the live path stops at `SELECT`. The model is retained and tested so a future write-enabled mode has a vetted policy to switch on:
 
-### Layer 8 — Rate Limiting
+| Operation | SAP_CORE | SAP_USER | CUSTOM | TEMP |
+|---|---|---|---|---|
+| SELECT | allow | allow | allow | allow |
+| INSERT | block | confirm | allow | allow |
+| UPDATE | `U_*` columns only | allow | allow | allow |
+| DELETE | block | confirm | allow | allow |
+| DROP | block | block | only inside `BEGIN..END` | only inside `BEGIN..END` |
 
-A sliding-window rate limiter prevents AI runaway loops. Each tool has its own counter. Configurable via `MCP_RATE_LIMIT_MAX_CALLS` (default: 60) and `MCP_RATE_LIMIT_WINDOW_MS` (default: 60 seconds).
+### Layer 8 — Rate limiting
 
-### Layer 9 — Audit Logging
+A sliding-window limiter per tool prevents AI runaway loops. Configurable via `MCP_RATE_LIMIT_MAX_CALLS` (default 60) and `MCP_RATE_LIMIT_WINDOW_MS` (default 60 s).
 
-Every operation is logged BEFORE execution — including denied operations. The audit log uses append-only JSON Lines format and writes to both stderr and a configurable file path.
+### Layer 9 — Audit logging
 
-Each entry records: timestamp, tool, database, operation type, tables, table types, decision (ALLOW/DENY), reason, rule, query, duration, and errors.
+Every operation is logged **before** execution, including denied ones, as JSON Lines to stderr and (optionally) a file. Each entry records timestamp, tool, database, operation type, tables, table types, decision, reason, rule, the query, duration and any error.
 
-## Operations That Are Always Blocked
+Logs never go to stdout — the MCP stdio transport uses stdout for JSON-RPC.
 
-- **CREATE / ALTER** — schema modification is never allowed
-- **EXEC / EXECUTE / CALL in raw SQL** — must use the `execute_procedure` tool
-- **Multi-statement queries** — semicolons outside BEGIN...END blocks
-- **INSERT on SAP core tables** — SAP manages row creation
-- **INSERT on SAP user tables without confirmation** — requires user approval
-- **DELETE on SAP core tables** — destructive operations on SAP core data
-- **DELETE on SAP user tables without confirmation** — requires user approval
-- **DROP on SAP core and user tables** — permanent
+## Always blocked in raw SQL
 
-## Connection Security
+- **`CREATE` / `ALTER`** — schema modification
+- **`EXEC` / `EXECUTE` / `CALL`** — stored procedures cannot be run through this server
+- **`INSERT` / `UPDATE` / `DELETE` / `DROP`** — read-only posture, no bypass
+- **Multi-statement queries** — semicolons outside `BEGIN...END`
+- **Unterminated quotes or brackets** — unanalysable
+- **`OPENQUERY` / `OPENROWSET` / `OPENDATASOURCE`** and **`SELECT ... INTO <table>`**
 
-- Database credentials come from environment variables, never from the AI
-- The connection is established ONCE at startup and is fixed for the server's lifetime
-- The AI cannot change the target database, server, or credentials
-- The `{db}` placeholder in queries is resolved by the database adapter, not by string interpolation
+## Connection security
 
-## Dry-Run Mode
+- Credentials live only in `~/.claude/connections.json`, are read inside the server process, and are passed straight to the `sps-sap-interface` adapters. There is **no env-var credential fallback**.
+- The AI never sees a password. A profile listing exposes only `id`, `dbName`, `dbType`, `slUrl` and a capability flag. Nothing is interpolated into tool responses, audit entries or error messages, and adapters do not retain the password after init.
+- The server starts **unconnected**. The AI selects a profile by name via `connect_database`; it cannot supply a host, database or credential of its own.
+- Switching environments **always disconnects both** the DB and the Service Layer first, so a session can never have DB on one environment and SL on another.
+- Failed logins are tracked per profile and side, with a warning after 3 consecutive failures — SAP B1 locks accounts after repeated failures.
+- Protect the profile file: `chmod 600 ~/.claude/connections.json` (Linux/macOS) or the `icacls` equivalent on Windows. It is the real trust boundary — see below.
 
-Set `MCP_DRY_RUN=true` to validate queries through all guardrails without executing them. Useful for testing the security model against a new database.
+## Dry-run mode
 
-## Reporting Vulnerabilities
+`MCP_DRY_RUN=true` validates queries through every guardrail without executing them. Useful for testing the security model against a new environment.
 
-If you discover a security vulnerability in sps-mcp-server, please report it privately via GitHub Issues.
+## Known limitations
+
+Stated explicitly, because a security document that omits them is worse than none:
+
+1. **No authentication at the MCP layer.** Anything that can speak stdio to this process can list profiles and connect to any of them, production included. That is inherent to local stdio MCP: the OS user account and the permissions on `connections.json` are the actual boundary.
+2. **Service Layer `PATCH` is an unrestricted write.** Any entity, any field the SL user may change, with a free-text OData URL. There is no entity allow-list. Combined with the prompt-injection surface above, this is the most significant remaining exposure.
+3. **`get_schema_info` does not pass through the guardrail engine.** It builds catalog SQL by string interpolation with `''` escaping and executes it directly. No injection is known, but it is the one SQL path with no net under it.
+4. **Read-only is not the same as harmless.** Lock hints (`WITH (UPDLOCK, HOLDLOCK)`, `TABLOCKX`) pass as reads and take locks on a pool that does not commit. Expensive joins are not cost-limited, and results have no row or byte cap, so one query can dump a whole table — `OUSR`, `SYS.USERS` — into the model's context.
+5. **The parser is not a full SQL parser.** It is a deliberately small classifier that denies by default. Its correctness rests on the quote/comment scanners; any change there must keep `tests/guardrails/quotedSpanEvasion.test.ts` green.
+
+## Reporting vulnerabilities
+
+Please report security issues privately via GitHub Issues.

@@ -87,9 +87,14 @@ export interface GuardrailResult {
   rule: string;
 
   /**
-   * When true, the operation is allowed but requires explicit user confirmation.
-   * The tool should return a confirmation prompt instead of executing, and only
-   * proceed when re-called with confirmed: true.
+   * When true, the operation would need explicit user confirmation before
+   * executing.
+   *
+   * NOT reachable on the live read-only server: no tool accepts a `confirmed`
+   * parameter and the SQL gate stops at SELECT, so a write never gets far
+   * enough to be confirmable. Set only by the per-operation rules under
+   * `guardrails/rules/`, which the unit tests exercise via validate(). Kept for
+   * a future write-enabled mode — see SECURITY.md, Layer 7.
    */
   requiresConfirmation?: boolean;
 
