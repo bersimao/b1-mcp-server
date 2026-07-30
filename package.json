@@ -29,12 +29,12 @@
   "author": "Bernardo Simão",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bersimao/claude-mcp-server.git"
+    "url": "git+https://github.com/bersimao/sps-mcp-server.git"
   },
   "bugs": {
-    "url": "https://github.com/bersimao/claude-mcp-server/issues"
+    "url": "https://github.com/bersimao/sps-mcp-server/issues"
   },
-  "homepage": "https://github.com/bersimao/claude-mcp-server#readme",
+  "homepage": "https://github.com/bersimao/sps-mcp-server#readme",
   "scripts": {
     "prebuild": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc",
