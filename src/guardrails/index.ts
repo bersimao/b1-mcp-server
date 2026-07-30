@@ -15,7 +15,7 @@
 // ============================================================================
 
 import { GuardrailResult, OperationType, ParsedQuery } from '../types/index.js';
-import { parseQuery } from './parser.js';
+import { parseQuery, stripComments, hasUnterminatedSpan } from './parser.js';
 import { evaluateSelect } from './rules/selectRule.js';
 import { evaluateUpdate } from './rules/updateRule.js';
 import { evaluateInsert } from './rules/insertRule.js';
@@ -23,10 +23,39 @@ import { evaluateDelete } from './rules/deleteRule.js';
 import { evaluateDrop } from './rules/dropRule.js';
 
 /**
+ * Deny SQL whose quoting is unbalanced.
+ *
+ * An unterminated quote/bracket blinds every downstream scanner from that point
+ * to the end of the statement, so a write keyword after it would never be seen.
+ * Checked on the comment-stripped text: an apostrophe inside a comment
+ * ("-- it's fine") is not an unterminated span.
+ *
+ * Shared by both gates so neither can drift out of sync.
+ */
+function checkMalformed(
+  sql: string,
+  parsed: ParsedQuery,
+): (GuardrailResult & { parsed: ParsedQuery }) | null {
+  if (!hasUnterminatedSpan(stripComments(sql))) return null;
+
+  return {
+    allowed: false,
+    reason:
+      'Unterminated quote or bracket in the SQL. Malformed quoting prevents reliable ' +
+      'security analysis, so the statement is rejected. Close every \', " and [ span.',
+    rule: 'malformedSql',
+    parsed,
+  };
+}
+
+/**
  * Full validation of any SQL operation (internal utility).
  */
 export function validate(sql: string): GuardrailResult & { parsed: ParsedQuery } {
   const parsed = parseQuery(sql);
+
+  const malformed = checkMalformed(sql, parsed);
+  if (malformed) return malformed;
 
   if (parsed.isMultiStatement) {
     return {
@@ -116,6 +145,11 @@ export function validate(sql: string): GuardrailResult & { parsed: ParsedQuery }
  */
 export function validateAnySql(sql: string): GuardrailResult & { parsed: ParsedQuery } {
   const parsed = parseQuery(sql);
+
+  // Malformed quoting — must run first: everything below scans text that an
+  // unterminated span would have blanked out.
+  const malformed = checkMalformed(sql, parsed);
+  if (malformed) return malformed;
 
   // Multi-statement check (already respects BEGIN...END block depth)
   if (parsed.isMultiStatement) {

@@ -32,37 +32,42 @@ import { OperationType, ParsedQuery } from '../types/index.js';
  * IMPORTANT: We strip comments BEFORE any parsing. This means the parser
  * never sees commented-out code, which eliminates an entire class of
  * evasion attacks.
+ *
+ * SECURITY: quoted spans are copied VERBATIM — string literals ('...'),
+ * quoted identifiers ("...") and bracketed identifiers ([...]). A comment
+ * marker inside any of them is DATA, not a comment. Stripping it would delete
+ * SQL that the database still receives and executes, hiding it from every
+ * downstream scan (multi-statement detection, operation classification, the
+ * write-keyword fail-safe) AND from the audit log, which would record only the
+ * harmless prefix. E.g. `SELECT 1 AS [x--]; DROP TABLE OITM` must not collapse
+ * to `SELECT 1 AS [x`.
  */
 export function stripComments(sql: string): string {
   let result = '';
   let i = 0;
-  let inSingleQuote = false;
 
   while (i < sql.length) {
-    // Track string literals so we don't strip "comments" inside strings
-    if (sql[i] === '\'' && !inSingleQuote) {
-      inSingleQuote = true;
-      result += sql[i];
-      i++;
-      continue;
-    }
+    const ch = sql[i];
 
-    if (sql[i] === '\'' && inSingleQuote) {
-      // Check for escaped quote ('')
-      if (i + 1 < sql.length && sql[i + 1] === '\'') {
-        result += '\'\'';
-        i += 2;
-        continue;
+    // Quoted / bracketed span → copy through untouched
+    if (ch === '\'' || ch === '"' || ch === '[') {
+      const close = ch === '[' ? ']' : ch;
+      result += ch;
+      i++;
+      while (i < sql.length) {
+        if (sql[i] === close) {
+          // Doubled closer ('' / "" / ]]) is an escape and stays inside the span
+          if (i + 1 < sql.length && sql[i + 1] === close) {
+            result += close + close;
+            i += 2;
+            continue;
+          }
+          break;
+        }
+        result += sql[i];
+        i++;
       }
-      inSingleQuote = false;
-      result += sql[i];
-      i++;
-      continue;
-    }
-
-    if (inSingleQuote) {
-      result += sql[i];
-      i++;
+      if (i < sql.length) { result += sql[i]; i++; } // closing delimiter
       continue;
     }
 
@@ -133,7 +138,15 @@ export function blankQuotedSpans(sql: string): string {
     if (ch === '[') {
       out += ch;
       i++;
-      while (i < sql.length && sql[i] !== ']') { out += ' '; i++; }
+      while (i < sql.length) {
+        if (sql[i] === ']') {
+          // Escaped ]] — stays inside the span (MS SQL identifier quoting)
+          if (i + 1 < sql.length && sql[i + 1] === ']') { out += '  '; i += 2; continue; }
+          break;
+        }
+        out += ' ';
+        i++;
+      }
       if (i < sql.length) { out += ']'; i++; } // closing bracket
       continue;
     }
@@ -143,6 +156,43 @@ export function blankQuotedSpans(sql: string): string {
   }
 
   return out;
+}
+
+/**
+ * Detects a quoted or bracketed span that is never closed.
+ *
+ * SECURITY: an unterminated span makes every scanner blind from that point to
+ * the end of the string — blankQuotedSpans blanks the remainder, so a write
+ * keyword after it is invisible to the fail-safe. Well-formed SQL never has
+ * one, so the gate denies rather than guesses.
+ */
+export function hasUnterminatedSpan(sql: string): boolean {
+  let i = 0;
+
+  while (i < sql.length) {
+    const ch = sql[i];
+
+    if (ch === '\'' || ch === '"' || ch === '[') {
+      const close = ch === '[' ? ']' : ch;
+      i++;
+      let closed = false;
+      while (i < sql.length) {
+        if (sql[i] === close) {
+          if (i + 1 < sql.length && sql[i + 1] === close) { i += 2; continue; } // escaped
+          closed = true;
+          i++;
+          break;
+        }
+        i++;
+      }
+      if (!closed) return true;
+      continue;
+    }
+
+    i++;
+  }
+
+  return false;
 }
 
 /**
