@@ -33,8 +33,14 @@ export function validateInput(
     return { safe: false, reason: 'Query contains null bytes.' };
   }
 
-  if (sql.length > maxQueryLength) {
-    return { safe: false, reason: `Query exceeds maximum length of ${maxQueryLength} characters.` };
+  // A non-finite cap (NaN from a bad env var) would make every comparison
+  // false and silently remove the limit — fall back to the default instead.
+  const cap = Number.isFinite(maxQueryLength) && maxQueryLength > 0
+    ? maxQueryLength
+    : DEFAULT_MAX_QUERY_LENGTH;
+
+  if (sql.length > cap) {
+    return { safe: false, reason: `Query exceeds maximum length of ${cap} characters.` };
   }
 
   return { safe: true };
