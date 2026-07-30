@@ -10,33 +10,46 @@ import { Config } from '../config/settings.js';
 import { OperationType, DbType } from '../types/index.js';
 import { RateLimiter } from '../rateLimit/rateLimiter.js';
 
-function buildSchemaQuery(objectType: string, filter: string | undefined, dbType: DbType): string {
-  const likeClause = filter ? ` AND UPPER(%%NAME%%) LIKE UPPER('${filter.replace(/'/g, "''")}')` : '';
+interface SchemaQuery {
+  query: string;
+  params: string[];
+}
+
+/**
+ * Builds the catalog query for the requested object type.
+ *
+ * The filter is NEVER interpolated: it always travels as a bound `?` parameter,
+ * so this path carries no SQL-injection surface of its own (it is the one SQL
+ * path that does not go through the guardrail engine).
+ */
+export function buildSchemaQuery(objectType: string, filter: string | undefined, dbType: DbType): SchemaQuery {
+  const like = (col: string) => (filter ? ` AND UPPER(${col}) LIKE UPPER(?)` : '');
+  const params = filter ? [filter] : [];
 
   if (dbType === 'hana') {
     switch (objectType) {
       case 'tables':
-        return `SELECT "TABLE_NAME", "TABLE_TYPE" FROM "SYS"."TABLES" WHERE "SCHEMA_NAME" = CURRENT_SCHEMA${likeClause.replace('%%NAME%%', '"TABLE_NAME"')} ORDER BY "TABLE_NAME"`;
+        return { query: `SELECT "TABLE_NAME", "TABLE_TYPE" FROM "SYS"."TABLES" WHERE "SCHEMA_NAME" = CURRENT_SCHEMA${like('"TABLE_NAME"')} ORDER BY "TABLE_NAME"`, params };
       case 'columns':
-        if (!filter) return 'SELECT \'Error: provide a table name in the filter field\' AS "Message" FROM DUMMY';
-        return `SELECT "COLUMN_NAME", "DATA_TYPE_NAME", "LENGTH", "IS_NULLABLE", "DEFAULT_VALUE" FROM "SYS"."TABLE_COLUMNS" WHERE "SCHEMA_NAME" = CURRENT_SCHEMA AND UPPER("TABLE_NAME") = UPPER('${filter.replace(/'/g, "''")}') ORDER BY "POSITION"`;
+        if (!filter) return { query: 'SELECT \'Error: provide a table name in the filter field\' AS "Message" FROM DUMMY', params: [] };
+        return { query: 'SELECT "COLUMN_NAME", "DATA_TYPE_NAME", "LENGTH", "IS_NULLABLE", "DEFAULT_VALUE" FROM "SYS"."TABLE_COLUMNS" WHERE "SCHEMA_NAME" = CURRENT_SCHEMA AND UPPER("TABLE_NAME") = UPPER(?) ORDER BY "POSITION"', params: [filter] };
       case 'procedures':
-        return `SELECT "PROCEDURE_NAME", "PROCEDURE_TYPE" FROM "SYS"."PROCEDURES" WHERE "SCHEMA_NAME" = CURRENT_SCHEMA${likeClause.replace('%%NAME%%', '"PROCEDURE_NAME"')} ORDER BY "PROCEDURE_NAME"`;
+        return { query: `SELECT "PROCEDURE_NAME", "PROCEDURE_TYPE" FROM "SYS"."PROCEDURES" WHERE "SCHEMA_NAME" = CURRENT_SCHEMA${like('"PROCEDURE_NAME"')} ORDER BY "PROCEDURE_NAME"`, params };
       default:
-        return 'SELECT \'Unsupported objectType\' AS "Message" FROM DUMMY';
+        return { query: 'SELECT \'Unsupported objectType\' AS "Message" FROM DUMMY', params: [] };
     }
   }
 
   switch (objectType) {
     case 'tables':
-      return `SELECT TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_CATALOG = DB_NAME()${likeClause.replace('%%NAME%%', 'TABLE_NAME')} ORDER BY TABLE_NAME`;
+      return { query: `SELECT TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_CATALOG = DB_NAME()${like('TABLE_NAME')} ORDER BY TABLE_NAME`, params };
     case 'columns':
-      if (!filter) return 'SELECT \'Error: provide a table name in the filter field\' AS Message';
-      return `SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_CATALOG = DB_NAME() AND UPPER(TABLE_NAME) = UPPER('${filter.replace(/'/g, "''")}') ORDER BY ORDINAL_POSITION`;
+      if (!filter) return { query: 'SELECT \'Error: provide a table name in the filter field\' AS Message', params: [] };
+      return { query: 'SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE, COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_CATALOG = DB_NAME() AND UPPER(TABLE_NAME) = UPPER(?) ORDER BY ORDINAL_POSITION', params: [filter] };
     case 'procedures':
-      return `SELECT ROUTINE_NAME, ROUTINE_TYPE FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_CATALOG = DB_NAME() AND ROUTINE_TYPE = 'PROCEDURE'${likeClause.replace('%%NAME%%', 'ROUTINE_NAME')} ORDER BY ROUTINE_NAME`;
+      return { query: `SELECT ROUTINE_NAME, ROUTINE_TYPE FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_CATALOG = DB_NAME() AND ROUTINE_TYPE = 'PROCEDURE'${like('ROUTINE_NAME')} ORDER BY ROUTINE_NAME`, params };
     default:
-      return 'SELECT \'Unsupported objectType\' AS Message';
+      return { query: 'SELECT \'Unsupported objectType\' AS Message', params: [] };
   }
 }
 
@@ -63,12 +76,12 @@ IMPORTANT: Before calling this tool, you MUST confirm which database the user in
         return { content: [{ type: 'text' as const, text: `Rate limit exceeded for get_schema_info. Try again in ${Math.ceil(rateCheck.retryAfterMs / 1000)}s.` }], isError: true };
       }
 
-      const query = buildSchemaQuery(objectType, filter, dbType());
+      const { query, params } = buildSchemaQuery(objectType, filter, dbType());
 
-      logger.log(logger.createEntry({ tool: 'get_schema_info', database: dbName(), dbType: dbType(), operation: OperationType.SELECT, tables: [], query, decision: 'ALLOW', reason: `Schema introspection: ${objectType}`, rule: 'schemaIntrospection' }));
+      logger.log(logger.createEntry({ tool: 'get_schema_info', database: dbName(), dbType: dbType(), operation: OperationType.SELECT, tables: [], query, decision: 'ALLOW', reason: `Schema introspection: ${objectType}${params.length ? ` filter=${JSON.stringify(params[0])}` : ''}`, rule: 'schemaIntrospection' }));
 
       try {
-        const result = await adapter.executeSelect(query, []);
+        const result = await adapter.executeSelect(query, params);
         return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] ${result.rowCount} ${objectType} found.\n${JSON.stringify(result.data, null, 2)}` }] };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);

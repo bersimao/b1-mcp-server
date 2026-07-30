@@ -88,7 +88,7 @@ Every tool is registered in [src/server.ts](src/server.ts) and shares the same a
 | `connect_database` | [tools/connectDatabase.ts](src/tools/connectDatabase.ts) | Switch active DB + SL; `"list"` to enumerate profiles |
 | `execute_sql` | [tools/executeSql.ts](src/tools/executeSql.ts) | Runs SQL (user- or AI-written) — **read-only**: only SELECT and read-only anonymous blocks pass `validateAnySql()` |
 | `execute_service_layer` | [tools/executeServiceLayer.ts](src/tools/executeServiceLayer.ts) | OData **GET / PATCH only**; POST/PUT/DELETE blocked server-side |
-| `get_schema_info` | [tools/schemaIntrospection.ts](src/tools/schemaIntrospection.ts) | Read-only metadata, HANA + MSSQL catalog syntax |
+| `get_schema_info` | [tools/schemaIntrospection.ts](src/tools/schemaIntrospection.ts) | Read-only metadata, HANA + MSSQL catalog syntax. Fixed catalog SELECTs; the `filter` is bound as `?`, never interpolated — this is the only SQL path that skips the guardrail engine, so the bind is the whole defence |
 | `check_connection` | [tools/checkConnection.ts](src/tools/checkConnection.ts) | Independent health pings for DB and SL |
 
 `execute_sql` handles SQL regardless of origin — user-written or AI-generated queries all go through the same `validateAnySql()` pipeline, which on this read-only server permits only SELECT (and anonymous blocks whose statements are all reads).
