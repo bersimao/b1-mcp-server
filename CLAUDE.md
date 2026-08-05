@@ -33,7 +33,7 @@ npm install                        # one-time
 npm run build                      # tsc — prebuild wipes dist/ for a clean output
 npm run watch                      # tsc --watch
 npm run dev                        # tsx src/index.ts (skips build)
-npm test                           # vitest run — full suite (391 tests)
+npm test                           # vitest run — full suite (403 tests)
 npm run test:watch                 # vitest in watch mode
 
 # Single file
@@ -128,7 +128,7 @@ Always blocked in raw SQL regardless: `EXEC` / `EXECUTE` / `CALL`, `CREATE` / `A
 
 ### Audit log
 
-[src/logging/auditLogger.ts](src/logging/auditLogger.ts) writes JSON Lines to stderr (always) and optionally to a file (default: `~/.claude/logs/sps-mcp-audit.jsonl`, set via `MCP_AUDIT_LOG_PATH`). Logging happens **before execution** — denied operations are recorded too. The MCP stdio transport uses stdout for JSON-RPC, so logs must never go to stdout.
+[src/logging/auditLogger.ts](src/logging/auditLogger.ts) writes JSON Lines to stderr (always) and optionally to a file (default: `~/.claude/logs/sps-mcp-audit.jsonl`, set via `MCP_AUDIT_LOG_PATH`). Logging happens **before execution** — denied operations are recorded too — and SQL execution writes a second completion/failure record with duration or error details. The MCP stdio transport uses stdout for JSON-RPC, so logs must never go to stdout.
 
 ## Layout
 

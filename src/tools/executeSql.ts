@@ -84,6 +84,8 @@ Rules enforced server-side:
       try {
         const result = await adapter.executeSql(query);
         auditEntry.durationMs = result.durationMs;
+        auditEntry.reason = 'Query completed successfully.';
+        logger.log(auditEntry);
         return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] ${result.rowCount} row(s) returned.\n${formatResult(result.data, config)}` }] };
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);

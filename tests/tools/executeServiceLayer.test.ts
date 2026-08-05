@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { DbAdapter, DirectDbModule } from '../../src/db/adapter.js';
 import { ServiceLayerAdapter } from '../../src/sl/serviceLayerAdapter.js';
@@ -36,6 +36,8 @@ function capture(overrides: Partial<Config> = {}) {
 }
 
 const accept = { sendRequest: vi.fn().mockResolvedValue({ action: 'accept', content: { approve: true } }) };
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe('execute_service_layer PATCH approval', () => {
   it('executes only after the user accepts the exact elicitation', async () => {
@@ -92,11 +94,12 @@ describe('execute_service_layer PATCH approval', () => {
   });
 
   it('cancels an approved PATCH after a same-database Service Layer switch', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
     const ctx = capture();
     const result = await ctx.handler(
       { method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } },
       { sendRequest: vi.fn().mockImplementation(async () => {
-        ctx.sl.disconnect();
+        await ctx.sl.disconnect();
         Object.assign(ctx.sl, {
           dbName: 'SBO_TEST', slUrl: 'https://other-sap/b1s/v2',
           cookie: 'B1SESSION=y', initialised: true,

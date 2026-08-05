@@ -263,7 +263,8 @@ npm run test:bash
 npm run test:watch:bash
 ```
 
-Quick connection sanity check (uses a profile from `connections.json`):
+From a source checkout only, run this quick connection sanity check using a
+profile from `connections.json` (`scripts/` is not shipped in the npm tarball):
 
 ```bash
 npx tsx scripts/test-connection.ts <profile-id>

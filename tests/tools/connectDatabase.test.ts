@@ -24,6 +24,7 @@ import type { Config } from '../../src/config/settings.js';
 const directories: string[] = [];
 afterEach(() => {
   inspectCertificate.mockReset();
+  vi.unstubAllGlobals();
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -47,6 +48,7 @@ function slConnectionKey(profile: Record<string, unknown>): string {
 }
 
 function setup() {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
   const directory = mkdtempSync(join(tmpdir(), 'connect-tool-test-'));
   directories.push(directory);
   const connectionsFile = join(directory, 'connections.json');
@@ -70,7 +72,7 @@ function setup() {
   });
   const sl = new ServiceLayerAdapter();
   const slInit = vi.spyOn(sl, 'init').mockResolvedValue();
-  vi.spyOn(sl, 'checkConnection').mockResolvedValue({ connected: true, durationMs: 2 });
+  const slCheck = vi.spyOn(sl, 'checkConnection').mockResolvedValue({ connected: true, durationMs: 2 });
   vi.spyOn(sl, 'getTlsStatus').mockReturnValue('PINNED TLS');
 
   const config: Config = {
@@ -87,7 +89,7 @@ function setup() {
     new RateLimiter({ maxCalls: 100, windowMs: 60000 }), new OperationCoordinator(),
     new ServiceLayerTrustStore(trustFile),
   );
-  return { connectionsFile, trustFile, handler, db, sl, slInit, directDb };
+  return { connectionsFile, trustFile, handler, db, sl, slInit, slCheck, directDb };
 }
 
 describe('connect_database profile reload and TLS enrollment', () => {
@@ -164,6 +166,35 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(ctx.db.isConnected()).toBe(true);
   });
 
+  it('does not attempt DirectDb login with an empty dbPassword', async () => {
+    const ctx = setup();
+    writeProfiles(ctx.connectionsFile, [{
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+      dbServer: 'db:30015', dbUser: 'db-user',
+    }]);
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest: vi.fn() });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('dbPassword is missing or empty');
+    expect(ctx.directDb.init).not.toHaveBeenCalled();
+  });
+
+  it('reconnects a matching DirectDb profile when its health check fails', async () => {
+    const ctx = setup();
+    vi.mocked(ctx.directDb.executeQuery)
+      .mockRejectedValueOnce(new Error('connection down'))
+      .mockResolvedValueOnce([]);
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest: vi.fn() });
+
+    expect(result.isError).toBeFalsy();
+    expect(ctx.directDb.close).toHaveBeenCalledOnce();
+    expect(ctx.directDb.init).toHaveBeenCalledWith(expect.objectContaining({
+      server: 'db:30015', database: 'SBO_CLIENT',
+    }));
+  });
+
   it('switches profiles whose database names match but servers differ', async () => {
     const ctx = setup();
     writeProfiles(ctx.connectionsFile, [{
@@ -211,6 +242,59 @@ describe('connect_database profile reload and TLS enrollment', () => {
     }));
     expect(ctx.db.isConnected()).toBe(true);
     expect(result.content[0].text).toContain('ServiceLayer: Connected');
+  });
+
+  it('reconnects Service Layer when a matching session fails its health check', async () => {
+    const ctx = setup();
+    const profile = {
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+      dbServer: 'db:30015', dbUser: 'db-user', dbPassword: 'db-secret',
+      slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+    };
+    Object.assign(ctx.sl, {
+      dbName: profile.dbName, slUrl: profile.slUrl, cookie: 'B1SESSION=expired',
+      initialised: true, connectionKey: slConnectionKey(profile),
+    });
+    ctx.slCheck
+      .mockResolvedValueOnce({ connected: false, durationMs: 2, error: 'HTTP 401' })
+      .mockResolvedValueOnce({ connected: true, durationMs: 3 });
+    inspectCertificate.mockResolvedValue({
+      origin: 'https://sap.example.com:50000', certificateSha256: 'AA:BB',
+      subject: '{}', issuer: '{}', validFrom: 'now', validTo: 'later', strictTlsValid: true,
+    });
+    writeProfiles(ctx.connectionsFile, [profile]);
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest: vi.fn() });
+
+    expect(result.isError).toBeFalsy();
+    expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({ url: profile.slUrl }));
+    expect(result.content[0].text).toContain('ServiceLayer: Connected');
+  });
+
+  it('uses an explicit server-name override when an existing pin stores an old name', async () => {
+    const ctx = setup();
+    new ServiceLayerTrustStore(ctx.trustFile).approve('https://10.0.0.1:50000', {
+      certificateSha256: 'AA:BB', serverName: 'old.sap.local',
+      subject: '{}', issuer: '{}', validFrom: 'now', validTo: 'later',
+    });
+    writeProfiles(ctx.connectionsFile, [{
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+      dbServer: 'db:30015', dbUser: 'db-user', dbPassword: 'db-secret',
+      slUrl: 'https://10.0.0.1:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+      slTlsServerName: 'new.sap.local',
+    }]);
+    inspectCertificate.mockResolvedValue({
+      origin: 'https://10.0.0.1:50000', certificateSha256: 'AA:BB',
+      subject: '{}', issuer: '{}', validFrom: 'now', validTo: 'later',
+      strictTlsValid: false, tlsError: 'self-signed certificate', serverName: 'new.sap.local',
+    });
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest: vi.fn() });
+
+    expect(result.isError).toBeFalsy();
+    expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({
+      tlsMode: 'pinned', tlsServerName: 'new.sap.local', certificateSha256: 'AA:BB',
+    }));
   });
 
   it('disconnects Service Layer even when closing DirectDb fails', async () => {

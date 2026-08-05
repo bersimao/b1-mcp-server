@@ -71,7 +71,9 @@ async function resolveServiceLayerTls(
   if (trusted && fingerprintEquals(trusted.certificateSha256, inspection.certificateSha256)) {
     return {
       tlsMode: 'pinned',
-      tlsServerName: trusted.serverName,
+      // An explicit profile override must be able to repair a stale/wrong name
+      // already stored beside the pin. `serverName` prefers that override.
+      tlsServerName: serverName,
       certificateSha256: inspection.certificateSha256,
       trustAction: 'existing-pin',
     };
@@ -279,9 +281,10 @@ Use "list" as the query to reload and list all available profiles.`,
           };
         }
 
-        const currentDb = adapter.isConnected() ? adapter.getDbName() : null;
         const lines = allProfiles.map(p => {
-          const active = currentDb && p.dbName === currentDb ? ' <- active' : '';
+          const dbActive = adapter.isConnected() && adapter.getConnectionKey() === dbConnectionKey(p);
+          const slActive = slAdapter.isConnected() && slAdapter.getConnectionKey() === slConnectionKey(p);
+          const active = dbActive || slActive ? ' <- active' : '';
           return `  ${p.id} -> ${p.dbName} (${p.dbType}) [${formatCapabilities(p)}]${active}`;
         });
 
@@ -336,11 +339,42 @@ Use "list" as the query to reload and list all available profiles.`,
 
       let dbAlreadyOnTarget = adapter.isConnected() && adapter.getConnectionKey() === dbTargetKey;
       let slAlreadyOnTarget = slAdapter.isConnected() && slAdapter.getConnectionKey() === slTargetKey;
+      let existingDbPingMs: number | undefined;
+      let existingSlPingMs: number | undefined;
 
-      // Both already connected to the target - nothing to do
-      if (dbAlreadyOnTarget && slAlreadyOnTarget) {
+      // A matching fingerprint says which profile created the adapter; it does
+      // not prove the underlying socket/session is still alive. HANA timeouts
+      // can drop the socket, and a rotated SL certificate invalidates the next
+      // pinned request. Probe matching sides so calling connect_database is a
+      // real recovery operation, not a permanent "already connected" no-op.
+      if (dbAlreadyOnTarget) {
+        const health = await adapter.checkConnection();
+        existingDbPingMs = health.durationMs;
+        if (!health.connected) {
+          await adapter.disconnect();
+          dbAlreadyOnTarget = false;
+        }
+      }
+      if (slAlreadyOnTarget) {
+        const health = await slAdapter.checkConnection();
+        existingSlPingMs = health.durationMs;
+        if (!health.connected) {
+          await slAdapter.disconnect();
+          slAlreadyOnTarget = false;
+        }
+      }
+
+      const everyConfiguredSideIsHealthy =
+        (!hasDb || dbAlreadyOnTarget) && (!hasSl || slAlreadyOnTarget);
+      if (everyConfiguredSideIsHealthy && (hasDb || hasSl)) {
         return {
-          content: [{ type: 'text' as const, text: `Already connected to "${profile.id}" (${profile.dbName}). No changes made.` }],
+          content: [{
+            type: 'text' as const,
+            text:
+              `Already connected to "${profile.id}" (${profile.dbName}); all configured sides are healthy.` +
+              `${existingDbPingMs != null ? `\nDirectDb: ${existingDbPingMs}ms` : ''}` +
+              `${existingSlPingMs != null ? `\nServiceLayer: ${existingSlPingMs}ms` : ''}`,
+          }],
         };
       }
 
@@ -356,7 +390,7 @@ Use "list" as the query to reload and list all available profiles.`,
         } finally {
           // A DB pool close can fail. The old Service Layer session must still
           // be torn down so a failed switch cannot leave it usable by mistake.
-          slAdapter.disconnect();
+          await slAdapter.disconnect();
         }
         // Both sides are down now, so neither may be treated as still on target.
         // One side's key can match while the other's does not (a profile edited
@@ -370,10 +404,16 @@ Use "list" as the query to reload and list all available profiles.`,
       // --- Connect DirectDb (skip if already on target) ---
       let dbConnected = dbAlreadyOnTarget;
       let dbError: string | undefined;
-      let dbPingMs: number | undefined;
+      let dbPingMs: number | undefined = existingDbPingMs;
+      let dbLoginAttempted = false;
 
-      if (hasDb && !dbAlreadyOnTarget) {
+      if (hasDb && !dbAlreadyOnTarget && !profile.dbPassword) {
+        dbError =
+          'dbPassword is missing or empty for this profile. No login was attempted, ' +
+          'because an empty password can count towards database account lockout.';
+      } else if (hasDb && !dbAlreadyOnTarget) {
         try {
+          dbLoginAttempted = true;
           await adapter.init({
             server: profile.dbServer,
             database: profile.dbName,
@@ -397,7 +437,7 @@ Use "list" as the query to reload and list all available profiles.`,
 
         if (dbConnected) {
           resetFailures(profile.id, 'db');
-        } else {
+        } else if (dbLoginAttempted) {
           recordFailure(profile.id, 'db');
         }
       }
@@ -405,7 +445,7 @@ Use "list" as the query to reload and list all available profiles.`,
       // --- Connect Service Layer (skip if already on target) ---
       let slConnected = slAlreadyOnTarget;
       let slError: string | undefined;
-      let slPingMs: number | undefined;
+      let slPingMs: number | undefined = existingSlPingMs;
       let slLoginAttempted = false;
       let slTrustAction: ResolvedTlsConfig['trustAction'] | undefined;
 
@@ -438,11 +478,11 @@ Use "list" as the query to reload and list all available profiles.`,
           slPingMs = check.durationMs;
           if (!check.connected) {
             slError = check.error;
-            slAdapter.disconnect();
+            await slAdapter.disconnect();
           }
         } catch (err) {
           slError = err instanceof Error ? err.message : String(err);
-          slAdapter.disconnect();
+          await slAdapter.disconnect();
         }
 
         if (slConnected) {

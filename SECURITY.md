@@ -109,7 +109,11 @@ A sliding-window limiter per tool prevents AI runaway loops. Configurable via `M
 
 ### Layer 11 — Audit logging
 
-Every operation is logged before execution, including denied ones. PATCH audit records the endpoint, field names and exact-body SHA-256 hash without recording field values or session cookies. Approval, completion and failure are logged separately.
+Every operation is logged before execution, including denied ones. Successful SQL
+execution adds a completion record with its duration, while SQL failures add a
+failure record with the error. PATCH audit records the endpoint, field names and
+exact-body SHA-256 hash without recording field values or session cookies.
+Approval, completion and failure are logged separately.
 
 Logs never go to stdout — the MCP stdio transport uses stdout for JSON-RPC.
 

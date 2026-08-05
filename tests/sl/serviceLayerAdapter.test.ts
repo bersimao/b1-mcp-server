@@ -88,6 +88,45 @@ describe('ServiceLayerAdapter secure transport', () => {
     expect(Object.values(adapter)).not.toContain('not-retained');
   });
 
+  it('logs out the SAP session before discarding it locally', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(loginResponse())
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const adapter = new ServiceLayerAdapter();
+    await adapter.init({
+      database: 'SBO_TEST', username: 'manager', password: 'secret', url: 'https://sap.local/b1s/v2',
+    });
+
+    await adapter.disconnect();
+
+    expect(fetchMock.mock.calls[1][0]).toBe('https://sap.local/b1s/v2/Logout');
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({
+      method: 'POST',
+      headers: expect.objectContaining({
+        Cookie: 'B1SESSION=top-secret-session; ROUTEID=.node1',
+      }),
+    });
+    expect(adapter.isConnected()).toBe(false);
+  });
+
+  it('finishes local disconnect when Service Layer Logout fails', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(loginResponse())
+      .mockRejectedValueOnce(new Error('network unavailable'));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const adapter = new ServiceLayerAdapter();
+    await adapter.init({
+      database: 'SBO_TEST', username: 'manager', password: 'secret', url: 'https://sap.local/b1s/v1',
+    });
+
+    await expect(adapter.disconnect()).resolves.toBeUndefined();
+    expect(adapter.isConnected()).toBe(false);
+    expect(adapter.getDbName()).toBe('');
+  });
+
   it('uses a configured v2 root and parses OData v4 responses without v1 assumptions', async () => {
     const v4Payload = { '@odata.context': 'https://sap.local/b1s/v2/$metadata#Items', value: [{ ItemCode: 'A1' }] };
     const fetchMock = vi.fn()

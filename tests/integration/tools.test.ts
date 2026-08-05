@@ -65,7 +65,7 @@ type ToolHandler = (args: Record<string, any>) => Promise<{ content: Array<{ typ
 function captureToolHandlers(
   mockDirectDb: DirectDbModule,
   configOverrides: Partial<Config> = {},
-): { handlers: Map<string, ToolHandler>; adapter: DbAdapter; mockDirectDb: DirectDbModule } {
+): { handlers: Map<string, ToolHandler>; adapter: DbAdapter; mockDirectDb: DirectDbModule; logger: AuditLogger } {
   const handlers = new Map<string, ToolHandler>();
   const config = createTestConfig(configOverrides);
   const logger = new AuditLogger(config);
@@ -87,7 +87,7 @@ function captureToolHandlers(
   registerSqlTool(fakeServer, adapter, logger, config, rateLimiter, coordinator);
   registerSchemaTool(fakeServer, adapter, logger, config, rateLimiter, coordinator);
 
-  return { handlers, adapter, mockDirectDb };
+  return { handlers, adapter, mockDirectDb, logger };
 }
 
 // ---------------------------------------------------------------------------
@@ -111,6 +111,21 @@ describe('execute_sql integration', () => {
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('1 row(s) returned');
     expect(result.content[0].text).toContain('C001');
+  });
+
+  it('logs successful SQL completion with its duration', async () => {
+    const ctx = captureToolHandlers(createMockDirectDb());
+    const auditLog = vi.spyOn(ctx.logger, 'log');
+    (ctx.mockDirectDb.executeQuery as any).mockResolvedValue([{ DocEntry: 1 }]);
+
+    await ctx.handlers.get('execute_sql')!({ query: 'SELECT "DocEntry" FROM ORDR WHERE "DocEntry" = 1' });
+
+    expect(auditLog).toHaveBeenCalledTimes(2);
+    expect(auditLog.mock.calls[0][0]).toMatchObject({ decision: 'ALLOW' });
+    expect(auditLog.mock.calls[1][0]).toMatchObject({
+      decision: 'ALLOW', reason: 'Query completed successfully.',
+      durationMs: expect.any(Number),
+    });
   });
 
   it('blocks UPDATE of non-UDF on SAP core table', async () => {

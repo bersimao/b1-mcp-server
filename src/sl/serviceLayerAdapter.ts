@@ -219,7 +219,7 @@ export class ServiceLayerAdapter {
   }): Promise<void> {
     // Clear any previous session before attempting a new login. A failed
     // reinitialisation must never leave an old target/cookie usable.
-    this.disconnect();
+    await this.disconnect();
     if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
       throw new Error('Refusing Service Layer login because NODE_TLS_REJECT_UNAUTHORIZED=0 disables TLS verification globally.');
     }
@@ -309,8 +309,16 @@ export class ServiceLayerAdapter {
   }
   isConnected(): boolean { return this.initialised; }
 
-  disconnect(): void {
-    this.pinnedAgent?.destroy();
+  async disconnect(): Promise<void> {
+    const wasInitialised = this.initialised;
+    const slUrl = this.slUrl;
+    const cookie = this.cookie;
+    const timeoutMs = this.timeoutMs;
+    const maxResponseChars = this.maxResponseChars;
+    const pinnedAgent = this.pinnedAgent;
+
+    // Clear local state first so no concurrent caller can reuse the session
+    // while the best-effort server-side logout is in flight.
     this.connectionGeneration++;
     this.initialised = false;
     this.dbName = '';
@@ -319,7 +327,28 @@ export class ServiceLayerAdapter {
     this.tlsMode = 'strict';
     this.connectionKey = '';
     this.pinnedAgent = undefined;
-    console.error('[sl-adapter] Disconnected from Service Layer.');
+
+    try {
+      if (wasInitialised && slUrl && cookie) {
+        const response = await this.request(
+          `${slUrl}/Logout`, 'POST', undefined, cookie,
+          timeoutMs, maxResponseChars, pinnedAgent,
+        );
+        if (response.status < 200 || response.status >= 300) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        console.error('[sl-adapter] Logged out and disconnected from Service Layer.');
+      } else {
+        console.error('[sl-adapter] Disconnected from Service Layer.');
+      }
+    } catch (error) {
+      // Local teardown is authoritative. If SAP is unavailable, its session
+      // will expire server-side; a failed Logout must not block profile switches.
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[sl-adapter] Disconnected locally; Service Layer Logout failed: ${message}`);
+    } finally {
+      pinnedAgent?.destroy();
+    }
   }
 
   async checkConnection(): Promise<{ connected: boolean; durationMs: number; error?: string }> {

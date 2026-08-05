@@ -37,6 +37,34 @@ function parseSlTlsMode(value: unknown): 'strict' | 'pinned' | undefined {
   throw new Error(`Invalid slTlsMode "${mode}". Expected "strict" or "pinned".`);
 }
 
+function requiredTrimmedString(value: unknown, field: string): string {
+  if (typeof value !== 'string') throw new Error(`${field} must be a string.`);
+  const normalized = value.trim();
+  if (!normalized) throw new Error(`${field} is required and cannot be blank.`);
+  return normalized;
+}
+
+function optionalTrimmedString(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string') throw new Error(`${field} must be a string.`);
+  const normalized = value.trim();
+  return normalized || undefined;
+}
+
+function optionalPassword(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') throw new Error(`${field} must be a string.`);
+  // Passwords are opaque credentials. Leading/trailing spaces may be
+  // intentional and must never be normalised before authentication.
+  return value;
+}
+
+function parseDbType(value: unknown): DbType {
+  const normalized = requiredTrimmedString(value, 'dbType').toLowerCase();
+  if (normalized === 'hana' || normalized === 'mssql') return normalized;
+  throw new Error(`Invalid dbType "${normalized}". Expected "hana" or "mssql".`);
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -105,26 +133,32 @@ export class ConnectionManager {
       // leave `profiles` empty, so one typo silently disabled every unrelated
       // environment in the file. Skip the offending profile, keep the rest.
       const accepted: ConnectionProfile[] = [];
-      for (const p of parsed as any[]) {
-        if (!p?.id || !p.dbType || !p.dbName) continue;
+      for (const [index, p] of (parsed as unknown[]).entries()) {
         try {
+          if (typeof p !== 'object' || p === null || Array.isArray(p)) {
+            throw new Error('profile must be a JSON object.');
+          }
+          const raw = p as Record<string, unknown>;
           accepted.push({
-            id: String(p.id).trim(),
-            dbType: String(p.dbType).trim().toLowerCase() === 'mssql' ? 'mssql' as DbType : 'hana' as DbType,
-            dbServer: String(p.dbServer || '').trim(),
-            dbName: String(p.dbName).trim(),
-            dbUser: String(p.dbUser || '').trim(),
-            dbPassword: String(p.dbPassword || '').trim(),
-            slUrl: p.slUrl ? String(p.slUrl).trim() : undefined,
-            slUser: p.slUser ? String(p.slUser).trim() : undefined,
-            slPassword: p.slPassword ? String(p.slPassword).trim() : undefined,
-            slTlsMode: parseSlTlsMode(p.slTlsMode),
-            slTlsServerName: p.slTlsServerName ? String(p.slTlsServerName).trim() : undefined,
-            slCertificateSha256: p.slCertificateSha256 ? String(p.slCertificateSha256).trim() : undefined,
+            id: requiredTrimmedString(raw.id, 'id'),
+            dbType: parseDbType(raw.dbType),
+            dbServer: optionalTrimmedString(raw.dbServer, 'dbServer') || '',
+            dbName: requiredTrimmedString(raw.dbName, 'dbName'),
+            dbUser: optionalTrimmedString(raw.dbUser, 'dbUser') || '',
+            dbPassword: optionalPassword(raw.dbPassword, 'dbPassword') || '',
+            slUrl: optionalTrimmedString(raw.slUrl, 'slUrl'),
+            slUser: optionalTrimmedString(raw.slUser, 'slUser'),
+            slPassword: optionalPassword(raw.slPassword, 'slPassword'),
+            slTlsMode: parseSlTlsMode(raw.slTlsMode),
+            slTlsServerName: optionalTrimmedString(raw.slTlsServerName, 'slTlsServerName'),
+            slCertificateSha256: optionalTrimmedString(raw.slCertificateSha256, 'slCertificateSha256'),
           });
         } catch (err: any) {
+          const label = typeof p === 'object' && p !== null && 'id' in p
+            ? JSON.stringify((p as Record<string, unknown>).id)
+            : `at index ${index}`;
           console.error(
-            `[connectionManager] Skipping profile "${String(p.id).trim()}": ${err.message}`,
+            `[connectionManager] Skipping profile ${label}: ${err.message}`,
           );
         }
       }
@@ -157,12 +191,14 @@ export class ConnectionManager {
     if (!q) return undefined;
 
     // Exact match on id
-    const byId = this.profiles.find(p => p.id.toLowerCase() === q);
-    if (byId) return byId;
+    const byId = this.profiles.filter(p => p.id.toLowerCase() === q);
+    if (byId.length === 1) return byId[0];
+    if (byId.length > 1) return undefined;
 
     // Exact match on dbName
-    const byDbName = this.profiles.find(p => p.dbName.toLowerCase() === q);
-    if (byDbName) return byDbName;
+    const byDbName = this.profiles.filter(p => p.dbName.toLowerCase() === q);
+    if (byDbName.length === 1) return byDbName[0];
+    if (byDbName.length > 1) return undefined;
 
     const partialMatches = this.getPartialMatches(q);
     return partialMatches.length === 1 ? partialMatches[0] : undefined;

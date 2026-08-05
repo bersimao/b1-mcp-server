@@ -65,6 +65,34 @@ describe('ConnectionManager.find', () => {
     expect(manager.listAll()).toEqual([]);
   });
 
+  it('fails closed when a profile declares an unknown database type', () => {
+    const manager = createManagerWithProfiles([{
+      id: 'typo', dbType: 'sql', dbName: 'SBO_UNSAFE',
+    }]);
+
+    expect(manager.listAll()).toEqual([]);
+  });
+
+  it('rejects blank required fields after normalization', () => {
+    const manager = createManagerWithProfiles([
+      { id: '   ', dbType: 'hana', dbName: 'SBO_EMPTY_ID' },
+      { id: 'empty_db', dbType: 'hana', dbName: '   ' },
+    ]);
+
+    expect(manager.listAll()).toEqual([]);
+  });
+
+  it('preserves password whitespace exactly', () => {
+    const manager = createManagerWithProfiles([{
+      id: 'spaced', dbType: 'hana', dbName: 'SBO_SPACED',
+      dbPassword: '  db secret  ', slPassword: '  sl secret  ',
+    }]);
+
+    expect(manager.find('spaced')).toMatchObject({
+      dbPassword: '  db secret  ', slPassword: '  sl secret  ',
+    });
+  });
+
   it('drops only the malformed profile, never its siblings', () => {
     // A throw from one bad field used to escape to load()'s catch and empty the
     // whole list, so a typo in one profile silently disabled every unrelated
@@ -108,5 +136,25 @@ describe('ConnectionManager.find', () => {
     const profile = manager.find('prd');
     expect(profile).toBeUndefined();
     expect(manager.findPartialMatches('prd')).toHaveLength(2);
+  });
+
+  it('returns undefined for duplicate exact ids', () => {
+    const manager = createManagerWithProfiles([
+      { id: 'duplicate', dbType: 'hana', dbName: 'SBO_A' },
+      { id: 'duplicate', dbType: 'mssql', dbName: 'SBO_B' },
+    ]);
+
+    expect(manager.find('duplicate')).toBeUndefined();
+    expect(manager.findPartialMatches('duplicate')).toHaveLength(2);
+  });
+
+  it('returns undefined for duplicate exact database names', () => {
+    const manager = createManagerWithProfiles([
+      { id: 'hmg', dbType: 'hana', dbName: 'SBO_CLONE' },
+      { id: 'prd', dbType: 'hana', dbName: 'SBO_CLONE' },
+    ]);
+
+    expect(manager.find('SBO_CLONE')).toBeUndefined();
+    expect(manager.findPartialMatches('SBO_CLONE')).toHaveLength(2);
   });
 });
