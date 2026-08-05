@@ -45,17 +45,24 @@ async function main() {
     process.exit(1);
   }
 
-  // 2. Import DirectDb
-  console.log('Importing sps-sap-interface...');
+  // 2. Import DirectDb — MCP_LOCAL_DIRECTDB=true picks the local driver, so the
+  //    same profile can be run through both implementations and compared.
   let DirectDb: any;
-  try {
-    const spsModule = await import('sps-sap-interface');
-    DirectDb = spsModule.DirectDb || (spsModule as any).default?.DirectDb;
-    if (!DirectDb) throw new Error('DirectDb not found in exports');
-    console.log('✅ sps-sap-interface loaded\n');
-  } catch (err) {
-    console.error(`❌ Failed to import sps-sap-interface: ${err instanceof Error ? err.message : err}`);
-    process.exit(1);
+  if (process.env.MCP_LOCAL_DIRECTDB === 'true') {
+    const { DirectDb: LocalDirectDb } = await import('../src/db/directDb.js');
+    DirectDb = new LocalDirectDb();
+    console.log('✅ local DirectDb driver loaded (MCP_LOCAL_DIRECTDB=true)\n');
+  } else {
+    console.log('Importing sps-sap-interface...');
+    try {
+      const spsModule = await import('sps-sap-interface');
+      DirectDb = spsModule.DirectDb || (spsModule as any).default?.DirectDb;
+      if (!DirectDb) throw new Error('DirectDb not found in exports');
+      console.log('✅ sps-sap-interface loaded\n');
+    } catch (err) {
+      console.error(`❌ Failed to import sps-sap-interface: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
   }
 
   // 3. Init connection
