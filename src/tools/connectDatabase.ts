@@ -379,14 +379,34 @@ Use "list" as the query to reload and list all available profiles.`,
         }
       }
 
-      // A side the profile no longer configures must be DOWN, not merely
-      // ignored. Deleting the SL fields from a profile is how an operator
-      // revokes Service Layer access; without this the old session would stay
-      // usable until process restart, because its key can never match again
-      // and the probe above only runs on matching sides.
+      // Tear down every side whose key no longer matches this profile, whether
+      // or not the profile still configures it. Deleting the SL fields is how an
+      // operator revokes Service Layer access, and a key that changed can never
+      // match again, so an untouched session would otherwise stay usable until
+      // the process restarted.
+      //
+      // Per-side teardown still upholds the invariant that DirectDb and the
+      // Service Layer never point at different environments: after this pass a
+      // connected side either already matched this profile, or is reconnected to
+      // it below. Nothing can be left pointing anywhere else. A side that DOES
+      // match is left alone, so rotating one side's credentials no longer bounces
+      // the other.
+      const previousDbName = adapter.getDbName() || slAdapter.getDbName();
+      const dbStale = adapter.isConnected() && !dbAlreadyOnTarget;
+      const slStale = slAdapter.isConnected() && !slAlreadyOnTarget;
+      if (dbStale || slStale) {
+        try {
+          if (dbStale) await adapter.disconnect();
+        } finally {
+          // A DB pool close can fail. The stale Service Layer session must still
+          // be torn down so a failed switch cannot leave it usable by mistake.
+          if (slStale) await slAdapter.disconnect();
+        }
+        console.error(`[connect] Ended stale connection(s) from "${previousDbName}".`);
+      }
+
       const everyConfiguredSideIsHealthy =
-        (hasDb ? dbAlreadyOnTarget : !adapter.isConnected()) &&
-        (hasSl ? slAlreadyOnTarget : !slAdapter.isConnected());
+        (!hasDb || dbAlreadyOnTarget) && (!hasSl || slAlreadyOnTarget);
       if (everyConfiguredSideIsHealthy && (hasDb || hasSl)) {
         return {
           content: [{
@@ -397,29 +417,6 @@ Use "list" as the query to reload and list all available profiles.`,
               `${existingSlPingMs != null ? `\nServiceLayer: ${existingSlPingMs}ms` : ''}`,
           }],
         };
-      }
-
-      // Switching to a different environment - disconnect both first
-      const isSameTarget =
-        (!adapter.isConnected() || adapter.getConnectionKey() === dbTargetKey) &&
-        (!slAdapter.isConnected() || slAdapter.getConnectionKey() === slTargetKey);
-
-      if (!isSameTarget) {
-        const previousDbName = adapter.getDbName() || slAdapter.getDbName();
-        try {
-          await adapter.disconnect();
-        } finally {
-          // A DB pool close can fail. The old Service Layer session must still
-          // be torn down so a failed switch cannot leave it usable by mistake.
-          await slAdapter.disconnect();
-        }
-        // Both sides are down now, so neither may be treated as still on target.
-        // One side's key can match while the other's does not (a profile edited
-        // between calls); without this, the matching side would be skipped below
-        // and still reported as connected after having just been torn down.
-        dbAlreadyOnTarget = false;
-        slAlreadyOnTarget = false;
-        console.error(`[connect] Switched away from "${previousDbName}" - both connections ended.`);
       }
 
       // --- Connect DirectDb (skip if already on target) ---

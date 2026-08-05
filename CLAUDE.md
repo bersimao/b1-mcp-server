@@ -33,7 +33,7 @@ npm install                        # one-time
 npm run build                      # tsc — prebuild wipes dist/ for a clean output
 npm run watch                      # tsc --watch
 npm run dev                        # tsx src/index.ts (skips build)
-npm test                           # vitest run — full suite (406 tests)
+npm test                           # vitest run — full suite (407 tests)
 npm run test:watch                 # vitest in watch mode
 
 # Single file
@@ -69,7 +69,7 @@ Each adapter tracks `dbName` and `dbType` but does **not** retain credentials af
 [src/tools/connectDatabase.ts](src/tools/connectDatabase.ts) implements the safe dual-connection switch:
 
 - `OperationCoordinator` serializes every operation and environment switch.
-- Connecting to a new environment disconnects both sides and closes the old DirectDb pool first.
+- Teardown is **per side**: each side carries a connection key (a hash of the profile fields that side uses), and any side whose key no longer matches the incoming profile is disconnected first — whether or not the new profile still configures it. Deleting the SL fields from a profile therefore really does end the session, and rotating one side's credentials no longer bounces the other. The invariant that DirectDb and Service Layer never point at different environments survives because a still-connected side either already matched the profile or is reconnected to it.
 - Partial success is allowed: if SL fails on the new target, DB stays active (and vice versa). Retrying the same profile reconnects only the failed side. Profiles reload on every connection call, so adding SL fields to an already-active DB-only profile initializes only SL.
 - Failed login attempts are tracked per profile/side; a warning is appended after `SAP_LOCKOUT_WARNING_THRESHOLD = 3` — SAP B1 locks accounts after repeated failures.
 

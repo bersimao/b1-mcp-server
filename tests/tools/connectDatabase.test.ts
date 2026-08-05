@@ -211,10 +211,10 @@ describe('connect_database profile reload and TLS enrollment', () => {
     }));
   });
 
-  it('reconnects the untouched side after one side of the same profile changes', async () => {
-    // Only the DB password rotated on disk. That forces a full teardown of both
-    // sides, so the unchanged Service Layer side must be logged in again instead
-    // of being reported as still connected on the strength of a stale flag.
+  it('reconnects only the changed side and leaves the untouched one alone', async () => {
+    // Only the DB password rotated on disk. Teardown is per side, so the DB
+    // reconnects with the new credential while the healthy Service Layer session
+    // keeps running — no needless Logout/Login on the side nothing touched.
     const ctx = setup();
     const profile = {
       id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
@@ -236,11 +236,10 @@ describe('connect_database profile reload and TLS enrollment', () => {
 
     expect(result.isError).toBeFalsy();
     expect(ctx.directDb.init).toHaveBeenCalledWith(expect.objectContaining({ password: 'db-rotated' }));
-    // The stale flag used to skip this login while still reporting "Connected".
-    expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({
-      database: 'SBO_CLIENT', url: profile.slUrl, username: 'sl-user',
-    }));
     expect(ctx.db.isConnected()).toBe(true);
+    // The SL side matched its key, so it is never torn down or logged in again.
+    expect(ctx.slInit).not.toHaveBeenCalled();
+    expect(ctx.sl.isConnected()).toBe(true);
     expect(result.content[0].text).toContain('ServiceLayer: Connected');
   });
 
@@ -267,7 +266,10 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(ctx.sl.isConnected()).toBe(false);
     expect(ctx.sl.getSlUrl()).toBe('');
     expect(ctx.slInit).not.toHaveBeenCalled();
+    // Only the revoked side comes down; the healthy DB is not bounced with it.
     expect(ctx.db.isConnected()).toBe(true);
+    expect(ctx.directDb.close).not.toHaveBeenCalled();
+    expect(ctx.directDb.init).not.toHaveBeenCalled();
   });
 
   it('refuses to guess between profiles sharing the same id', async () => {
@@ -338,6 +340,31 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({
       tlsMode: 'pinned', tlsServerName: 'new.sap.local', certificateSha256: 'AA:BB',
     }));
+  });
+
+  it('ends a foreign DirectDb pool even when the target profile has no DB side', async () => {
+    // The invariant behind per-side teardown: a stale side is torn down whether
+    // or not the incoming profile configures it. Here nothing would ever
+    // reconnect DirectDb, so skipping it would strand a PROD pool beside an HMG
+    // Service Layer session — the exact cross-environment mix this forbids.
+    const ctx = setup();
+    Object.assign(ctx.db, { dbName: 'SBO_PROD', connectionKey: 'prod-profile' });
+    writeProfiles(ctx.connectionsFile, [{
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_HMG',
+      slUrl: 'https://hmg.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+    }]);
+    inspectCertificate.mockResolvedValue({
+      origin: 'https://hmg.example.com:50000', certificateSha256: 'AA:BB',
+      subject: '{}', issuer: '{}', validFrom: 'now', validTo: 'later',
+      strictTlsValid: true,
+    });
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest: vi.fn() });
+
+    expect(result.isError).toBeFalsy();
+    expect(ctx.db.isConnected()).toBe(false);
+    expect(ctx.directDb.close).toHaveBeenCalledOnce();
+    expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({ database: 'SBO_HMG' }));
   });
 
   it('disconnects Service Layer even when closing DirectDb fails', async () => {
