@@ -15,7 +15,7 @@ import { resolve } from 'node:path';
 
 const rootPackage = JSON.parse(
   readFileSync(resolve(import.meta.dirname, '../package.json'), 'utf8'),
-) as { version: string };
+) as { version: string; bin: Record<string, string> };
 
 describe('advertised server version', () => {
   it('resolves ../package.json from the source layout', () => {
@@ -39,5 +39,14 @@ describe('advertised server version', () => {
     const source = readFileSync(resolve(import.meta.dirname, '../src/server.ts'), 'utf8');
     expect(source).toMatch(/version:\s*SERVER_VERSION/);
     expect(source).not.toMatch(/version:\s*['"]\d+\.\d+\.\d+['"]/);
+  });
+});
+
+describe('published executable metadata', () => {
+  it('exposes the npx command without npm publish normalization', () => {
+    expect(rootPackage.bin).toEqual({ 'sps-mcp-server': 'dist/index.js' });
+
+    const entrypoint = readFileSync(resolve(import.meta.dirname, '../src/index.ts'), 'utf8');
+    expect(entrypoint.startsWith('#!/usr/bin/env node\n')).toBe(true);
   });
 });
