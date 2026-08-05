@@ -20,6 +20,7 @@ import { OperationType } from '../types/index.js';
 import { RateLimiter } from '../rateLimit/rateLimiter.js';
 import { OperationCoordinator } from '../security/operationCoordinator.js';
 import { ServiceLayerTrustStore } from '../security/serviceLayerTrustStore.js';
+import { createHash } from 'node:crypto';
 
 interface ResolvedTlsConfig {
   tlsMode?: ServiceLayerTlsMode;
@@ -139,6 +140,21 @@ function hasDbCredentials(p: ConnectionProfile): boolean {
 /** Check if a profile has Service Layer credentials configured. */
 function hasSlCredentials(p: ConnectionProfile): boolean {
   return !!(p.slUrl && p.slUser);
+}
+
+function connectionKey(values: unknown[]): string {
+  return createHash('sha256').update(JSON.stringify(values)).digest('hex');
+}
+
+function dbConnectionKey(p: ConnectionProfile): string {
+  return connectionKey([p.id, p.dbType, p.dbServer, p.dbName, p.dbUser, p.dbPassword]);
+}
+
+function slConnectionKey(p: ConnectionProfile): string {
+  return connectionKey([
+    p.id, p.dbName, p.slUrl, p.slUser, p.slPassword,
+    p.slTlsMode, p.slTlsServerName, p.slCertificateSha256,
+  ]);
 }
 
 /** Format connection capabilities for display. */
@@ -315,9 +331,11 @@ Use "list" as the query to reload and list all available profiles.`,
       // When retrying a failed side on the SAME profile, only connect that side.
       const hasDb = hasDbCredentials(profile);
       const hasSl = hasSlCredentials(profile);
+      const dbTargetKey = dbConnectionKey(profile);
+      const slTargetKey = slConnectionKey(profile);
 
-      const dbAlreadyOnTarget = adapter.isConnected() && adapter.getDbName() === profile.dbName;
-      const slAlreadyOnTarget = slAdapter.isConnected() && slAdapter.getDbName() === profile.dbName;
+      const dbAlreadyOnTarget = adapter.isConnected() && adapter.getConnectionKey() === dbTargetKey;
+      const slAlreadyOnTarget = slAdapter.isConnected() && slAdapter.getConnectionKey() === slTargetKey;
 
       // Both already connected to the target - nothing to do
       if (dbAlreadyOnTarget && slAlreadyOnTarget) {
@@ -328,13 +346,18 @@ Use "list" as the query to reload and list all available profiles.`,
 
       // Switching to a different environment - disconnect both first
       const isSameTarget =
-        (!adapter.isConnected() || adapter.getDbName() === profile.dbName) &&
-        (!slAdapter.isConnected() || slAdapter.getDbName() === profile.dbName);
+        (!adapter.isConnected() || adapter.getConnectionKey() === dbTargetKey) &&
+        (!slAdapter.isConnected() || slAdapter.getConnectionKey() === slTargetKey);
 
       if (!isSameTarget) {
         const previousDbName = adapter.getDbName() || slAdapter.getDbName();
-        await adapter.disconnect();
-        slAdapter.disconnect();
+        try {
+          await adapter.disconnect();
+        } finally {
+          // A DB pool close can fail. The old Service Layer session must still
+          // be torn down so a failed switch cannot leave it usable by mistake.
+          slAdapter.disconnect();
+        }
         console.error(`[connect] Switched away from "${previousDbName}" - both connections ended.`);
       }
 
@@ -352,6 +375,7 @@ Use "list" as the query to reload and list all available profiles.`,
             username: profile.dbUser,
             password: profile.dbPassword,
             timeoutMs: config.queryTimeoutMs,
+            connectionKey: dbTargetKey,
           });
           const check = await adapter.checkConnection();
           dbConnected = check.connected;
@@ -401,6 +425,7 @@ Use "list" as the query to reload and list all available profiles.`,
             tlsMode: tls.tlsMode,
             tlsServerName: tls.tlsServerName,
             certificateSha256: tls.certificateSha256,
+            connectionKey: slTargetKey,
           });
           const check = await slAdapter.checkConnection();
           slConnected = check.connected;

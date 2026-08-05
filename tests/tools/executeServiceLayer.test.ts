@@ -45,6 +45,7 @@ describe('execute_service_layer PATCH approval', () => {
     expect(accept.sendRequest).toHaveBeenCalledOnce();
     const approvalRequest = accept.sendRequest.mock.calls[0][0];
     expect(approvalRequest.params.message).toContain('Database: SBO_TEST');
+    expect(approvalRequest.params.message).toContain('Service Layer: https://sap/b1s/v1');
     expect(approvalRequest.params.message).toContain('"CreditLimit":10');
     expect(approvalRequest.params.message).toMatch(/Body SHA-256: [a-f0-9]{64}/);
     expect(execute).toHaveBeenCalledWith({ method: 'PATCH', url: "BusinessPartners('C1')", data: { CreditLimit: 10 } });
@@ -83,6 +84,23 @@ describe('execute_service_layer PATCH approval', () => {
       { method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } },
       { sendRequest: vi.fn().mockImplementation(async () => {
         Object.assign(ctx.sl, { dbName: 'SBO_OTHER' });
+        return { action: 'accept', content: { approve: true } };
+      }) },
+    );
+    expect(result.isError).toBe(true);
+    expect(ctx.execute).not.toHaveBeenCalled();
+  });
+
+  it('cancels an approved PATCH after a same-database Service Layer switch', async () => {
+    const ctx = capture();
+    const result = await ctx.handler(
+      { method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } },
+      { sendRequest: vi.fn().mockImplementation(async () => {
+        ctx.sl.disconnect();
+        Object.assign(ctx.sl, {
+          dbName: 'SBO_TEST', slUrl: 'https://other-sap/b1s/v2',
+          cookie: 'B1SESSION=y', initialised: true,
+        });
         return { action: 'accept', content: { approve: true } };
       }) },
     );

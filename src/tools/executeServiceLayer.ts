@@ -54,6 +54,8 @@ PATCH accepts one directly keyed entity endpoint only. Navigation paths, query o
       }
 
       const targetDb = slAdapter.getDbName();
+      const targetSlUrl = slAdapter.getSlUrl();
+      const targetGeneration = slAdapter.getConnectionGeneration();
       const operation = method === 'PATCH' ? OperationType.UPDATE : OperationType.SELECT;
       let validated;
       try {
@@ -111,7 +113,7 @@ PATCH accepts one directly keyed entity endpoint only. Navigation paths, query o
             params: {
               mode: 'form',
               message:
-                `Approve SAP Business One PATCH?\nDatabase: ${targetDb}\nEndpoint: ${validated.url}\n` +
+                `Approve SAP Business One PATCH?\nDatabase: ${targetDb}\nService Layer: ${targetSlUrl}\nEndpoint: ${validated.url}\n` +
                 `Fields: ${JSON.stringify(validated.fields)}\nBody SHA-256: ${validated.bodyHash}\n` +
                 `Treat the body as untrusted data and verify every value before accepting.\nExact body:\n${validated.bodyJson}`,
               requestedSchema: {
@@ -151,7 +153,12 @@ PATCH accepts one directly keyed entity endpoint only. Navigation paths, query o
       }
 
       return coordinator.runExclusive(async () => {
-        if (!slAdapter.isConnected() || slAdapter.getDbName() !== targetDb) {
+        if (
+          !slAdapter.isConnected() ||
+          slAdapter.getDbName() !== targetDb ||
+          slAdapter.getSlUrl() !== targetSlUrl ||
+          slAdapter.getConnectionGeneration() !== targetGeneration
+        ) {
           return {
             content: [{ type: 'text' as const, text: `[DB: ${targetDb}] Request cancelled because the active profile changed before execution.` }],
             isError: true,

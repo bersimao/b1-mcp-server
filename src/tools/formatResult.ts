@@ -31,6 +31,17 @@ export function formatResult(data: unknown, config: Config): string {
       `TRUNCATED: showing the first ${config.maxResultRows} of ${data.length} rows. ` +
       `Narrow the query (WHERE / TOP / LIMIT) or raise MCP_MAX_RESULT_ROWS.`,
     );
+  } else if (
+    typeof data === 'object' && data !== null &&
+    'value' in data && Array.isArray((data as { value: unknown }).value) &&
+    (data as { value: unknown[] }).value.length > config.maxResultRows
+  ) {
+    const rows = (data as { value: unknown[] }).value;
+    shown = { ...data, value: rows.slice(0, config.maxResultRows) };
+    notes.push(
+      `TRUNCATED: showing the first ${config.maxResultRows} of ${rows.length} rows. ` +
+      `Narrow the query ($filter / $top) or raise MCP_MAX_RESULT_ROWS.`,
+    );
   }
 
   let json = JSON.stringify(shown, null, 2) ?? String(shown);

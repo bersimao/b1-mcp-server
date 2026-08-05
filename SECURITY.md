@@ -18,7 +18,7 @@ The DirectDb/SQL path executes **only** `SELECT`, plus anonymous blocks whose st
 
 Writes are the human's job: the AI produces the SQL and a person runs it in a real DB client (HANA Studio / DBeaver / hdbsql), where `COMMIT` is guaranteed. This is deliberate — the shared `DirectDb` pool does not guarantee a commit and can leave orphaned, lock-holding transactions.
 
-The Service Layer path allows `GET` and guarded `PATCH`. PATCH is permitted only for one directly keyed entity after the client presents the exact database, endpoint, fields, body and body hash to the user and receives explicit acceptance through MCP form elicitation. Clients without elicitation support fail closed. `POST`, `PUT` and `DELETE` are blocked server-side.
+The Service Layer path allows `GET` and guarded `PATCH`. PATCH is permitted only for one directly keyed entity after the client presents the exact database, Service Layer root, endpoint, fields, body and body hash to the user and receives explicit acceptance through MCP form elicitation. Clients without elicitation support fail closed. `POST`, `PUT` and `DELETE` are blocked server-side.
 
 ## Tools
 
@@ -99,7 +99,7 @@ Connection switching and every DB/Service Layer operation share one coordinator.
 - PATCH must target one directly keyed entity with no navigation or query options.
 - Explicit user form elicitation bound to target, exact body and SHA-256 hash.
 - Fail-closed when elicitation is unavailable, declined or cancelled.
-- Emergency `MCP_SL_PATCH_ENABLED=false` kill switch.
+- Emergency `MCP_SL_PATCH_ENABLED=false` kill switch; parsing is case-insensitive and malformed values fail closed by disabling PATCH.
 - Dry-run validates and previews but never writes.
 - Bounded URL, body, response and request time.
 

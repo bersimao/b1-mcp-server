@@ -70,6 +70,7 @@ export class DbAdapter {
   private dbName: string;
   private dbType: DbType;
   private initialised = false;
+  private connectionKey = '';
 
   constructor(directDb: DirectDbModule) {
     this.directDb = directDb;
@@ -94,6 +95,8 @@ export class DbAdapter {
      * Omitted → DirectDb's own default of 600 000 ms (ten minutes).
      */
     timeoutMs?: number;
+    /** Opaque fingerprint of the selected profile side. */
+    connectionKey?: string;
   }): Promise<void> {
     const databaseType = config.dbType === 'hana' ? 'HANA' : 'SQL';
 
@@ -118,6 +121,7 @@ export class DbAdapter {
 
     this.dbName = config.database;
     this.dbType = config.dbType;
+    this.connectionKey = config.connectionKey || '';
     this.initialised = true;
 
     console.error(`[adapter] Connected to ${config.dbType}://${config.server}/${config.database}`);
@@ -126,6 +130,7 @@ export class DbAdapter {
   getDbName(): string { return this.dbName; }
   getDbType(): DbType { return this.dbType; }
   isConnected(): boolean { return this.initialised; }
+  getConnectionKey(): string { return this.connectionKey; }
 
   /**
    * Disconnects and resets internal state.
@@ -137,6 +142,7 @@ export class DbAdapter {
     this.initialised = false;
     this.dbName = '';
     this.dbType = 'hana';
+    this.connectionKey = '';
     if (shouldClose) {
       await this.directDb.close();
     }

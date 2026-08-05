@@ -25,6 +25,15 @@ describe('formatResult', () => {
     expect(JSON.parse(json)).toHaveLength(500);
   });
 
+  it('caps rows inside a Service Layer OData value envelope', () => {
+    const out = formatResult({ value: rowsOf(12), '@odata.nextLink': 'Items?$skip=12' }, config(5, 100_000));
+    expect(out).toContain('first 5 of 12 rows');
+    const json = out.slice(out.indexOf('\n') + 1);
+    const parsed = JSON.parse(json);
+    expect(parsed.value).toHaveLength(5);
+    expect(parsed['@odata.nextLink']).toBe('Items?$skip=12');
+  });
+
   it('caps the character count when few rows are very wide', () => {
     const wide = [{ blob: 'x'.repeat(5000) }];
     const out = formatResult(wide, config(500, 1000));

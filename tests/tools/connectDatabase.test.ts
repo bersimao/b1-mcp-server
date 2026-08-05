@@ -1,6 +1,7 @@
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
@@ -31,6 +32,13 @@ function writeProfiles(file: string, profiles: unknown[]): void {
   if (process.platform !== 'win32') chmodSync(file, 0o600);
 }
 
+function dbConnectionKey(profile: Record<string, unknown>): string {
+  return createHash('sha256').update(JSON.stringify([
+    profile.id, profile.dbType, profile.dbServer, profile.dbName,
+    profile.dbUser, profile.dbPassword,
+  ])).digest('hex');
+}
+
 function setup() {
   const directory = mkdtempSync(join(tmpdir(), 'connect-tool-test-'));
   directories.push(directory);
@@ -45,7 +53,14 @@ function setup() {
   manager.load();
   const directDb: DirectDbModule = { init: vi.fn(), executeQuery: vi.fn(), close: vi.fn() };
   const db = new DbAdapter(directDb);
-  Object.assign(db, { dbName: 'SBO_CLIENT', dbType: 'hana', initialised: true });
+  const initialProfile = {
+    id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+    dbServer: 'db:30015', dbUser: 'db-user', dbPassword: 'db-secret',
+  };
+  Object.assign(db, {
+    dbName: 'SBO_CLIENT', dbType: 'hana', initialised: true,
+    connectionKey: dbConnectionKey(initialProfile),
+  });
   const sl = new ServiceLayerAdapter();
   const slInit = vi.spyOn(sl, 'init').mockResolvedValue();
   vi.spyOn(sl, 'checkConnection').mockResolvedValue({ connected: true, durationMs: 2 });
@@ -65,7 +80,7 @@ function setup() {
     new RateLimiter({ maxCalls: 100, windowMs: 60000 }), new OperationCoordinator(),
     new ServiceLayerTrustStore(trustFile),
   );
-  return { connectionsFile, trustFile, handler, db, slInit, directDb };
+  return { connectionsFile, trustFile, handler, db, sl, slInit, directDb };
 }
 
 describe('connect_database profile reload and TLS enrollment', () => {
@@ -140,5 +155,38 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(sendRequest).not.toHaveBeenCalled();
     // DB side is unaffected and stays usable.
     expect(ctx.db.isConnected()).toBe(true);
+  });
+
+  it('switches profiles whose database names match but servers differ', async () => {
+    const ctx = setup();
+    writeProfiles(ctx.connectionsFile, [{
+      id: 'client_prod', dbType: 'hana', dbName: 'SBO_CLIENT',
+      dbServer: 'prod-db:30015', dbUser: 'prod-user', dbPassword: 'prod-secret',
+    }]);
+
+    const result = await ctx.handler({ query: 'client_prod' }, { sendRequest: vi.fn() });
+
+    expect(result.isError).toBeFalsy();
+    expect(ctx.directDb.close).toHaveBeenCalledOnce();
+    expect(ctx.directDb.init).toHaveBeenCalledWith(expect.objectContaining({
+      server: 'prod-db:30015', database: 'SBO_CLIENT', username: 'prod-user',
+    }));
+  });
+
+  it('disconnects Service Layer even when closing DirectDb fails', async () => {
+    const ctx = setup();
+    Object.assign(ctx.sl, {
+      dbName: 'SBO_CLIENT', slUrl: 'https://old-sap/b1s/v2',
+      cookie: 'B1SESSION=old', initialised: true, connectionKey: 'old-profile',
+    });
+    vi.mocked(ctx.directDb.close).mockRejectedValueOnce(new Error('pool close failed'));
+    writeProfiles(ctx.connectionsFile, [{
+      id: 'other', dbType: 'hana', dbName: 'SBO_OTHER',
+      dbServer: 'other-db:30015', dbUser: 'other-user', dbPassword: 'other-secret',
+    }]);
+
+    await expect(ctx.handler({ query: 'other' }, { sendRequest: vi.fn() }))
+      .rejects.toThrow('pool close failed');
+    expect(ctx.sl.isConnected()).toBe(false);
   });
 });

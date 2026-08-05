@@ -212,7 +212,7 @@ All optional.
 | `MCP_SL_TRUST_FILE` | `~/.claude/service-layer-trust.json` | Local non-secret certificate trust store |
 | `MCP_SL_MAX_URL_LENGTH` | `2048` | Maximum relative OData URL length |
 | `MCP_SL_MAX_BODY_CHARS` | `50000` | Maximum serialised PATCH body length |
-| `MCP_SL_PATCH_ENABLED` | `true` | Emergency PATCH kill switch; set to `false` to disable writes |
+| `MCP_SL_PATCH_ENABLED` | `true` | Emergency PATCH kill switch; `true`/`false` are case-insensitive and invalid values disable writes |
 | `MCP_ELICITATION_TIMEOUT_MS` | `120000` | How long a human gets to answer an approval form (certificate trust, PATCH) before it fails closed |
 | `MCP_MAX_RESULT_ROWS` | `500` | Max rows returned to the model; extra rows are cut and announced |
 | `MCP_MAX_RESULT_CHARS` | `100000` | Max characters of result JSON, applied after the row cap |
@@ -242,7 +242,7 @@ and `SELECT ... INTO <table>`.
 Service Layer requests allow `GET` and guarded `PATCH` only. `POST` / `PUT` /
 `DELETE` are blocked. PATCH requires one directly keyed entity endpoint and an
 explicit user acceptance through MCP form elicitation. The approval screen is
-bound to the database, endpoint, exact body, field list and SHA-256 body hash.
+bound to the database, Service Layer root, endpoint, exact body, field list and SHA-256 body hash.
 A client without elicitation support cannot PATCH. `MCP_DRY_RUN=true` never
 executes PATCH, and `MCP_SL_PATCH_ENABLED=false` disables it globally.
 

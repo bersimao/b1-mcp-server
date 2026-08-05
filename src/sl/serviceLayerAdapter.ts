@@ -202,6 +202,8 @@ export class ServiceLayerAdapter {
   private initialised = false;
   private tlsMode: ServiceLayerTlsMode = 'strict';
   private pinnedAgent?: Agent;
+  private connectionKey = '';
+  private connectionGeneration = 0;
 
   async init(config: {
     database: string;
@@ -213,6 +215,7 @@ export class ServiceLayerAdapter {
     tlsMode?: ServiceLayerTlsMode;
     tlsServerName?: string;
     certificateSha256?: string;
+    connectionKey?: string;
   }): Promise<void> {
     // Clear any previous session before attempting a new login. A failed
     // reinitialisation must never leave an old target/cookie usable.
@@ -285,6 +288,7 @@ export class ServiceLayerAdapter {
     this.maxResponseChars = maxResponseChars;
     this.tlsMode = tlsMode;
     this.pinnedAgent = pinnedAgent;
+    this.connectionKey = config.connectionKey || '';
     this.initialised = true;
 
     const tlsDescription = tlsMode === 'pinned'
@@ -296,6 +300,8 @@ export class ServiceLayerAdapter {
   getDbName(): string { return this.dbName; }
   getSlUrl(): string { return this.slUrl; }
   getTlsMode(): ServiceLayerTlsMode { return this.tlsMode; }
+  getConnectionKey(): string { return this.connectionKey; }
+  getConnectionGeneration(): number { return this.connectionGeneration; }
   getTlsStatus(): string {
     return this.tlsMode === 'pinned'
       ? 'PINNED TLS — certificate CA/validity verification replaced by an exact SHA-256 pin'
@@ -305,11 +311,13 @@ export class ServiceLayerAdapter {
 
   disconnect(): void {
     this.pinnedAgent?.destroy();
+    this.connectionGeneration++;
     this.initialised = false;
     this.dbName = '';
     this.slUrl = '';
     this.cookie = '';
     this.tlsMode = 'strict';
+    this.connectionKey = '';
     this.pinnedAgent = undefined;
     console.error('[sl-adapter] Disconnected from Service Layer.');
   }

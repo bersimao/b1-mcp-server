@@ -107,6 +107,24 @@ function logLevelEnv(): Config['logLevel'] {
   return 'info';
 }
 
+/**
+ * Reads the PATCH emergency switch. Invalid values fail closed because an
+ * operator typo must never leave Service Layer writes enabled unexpectedly.
+ */
+function slPatchEnabledEnv(): boolean {
+  const raw = process.env.MCP_SL_PATCH_ENABLED;
+  if (raw === undefined || raw.trim() === '') return true;
+
+  const normalized = raw.trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+
+  console.error(
+    `[config] MCP_SL_PATCH_ENABLED="${raw}" is not "true" or "false" — disabling PATCH.`,
+  );
+  return false;
+}
+
 export function loadConfig(): Config {
   // Connections file: env var or default to ~/.claude/connections.json
   const connectionsFile = process.env.MCP_CONNECTIONS_FILE || '';
@@ -140,7 +158,7 @@ export function loadConfig(): Config {
 
     slMaxBodyChars: positiveIntEnv('MCP_SL_MAX_BODY_CHARS', 50_000),
 
-    slPatchEnabled: process.env.MCP_SL_PATCH_ENABLED !== 'false',
+    slPatchEnabled: slPatchEnabledEnv(),
 
     elicitationTimeoutMs: positiveIntEnv('MCP_ELICITATION_TIMEOUT_MS', 120_000),
 

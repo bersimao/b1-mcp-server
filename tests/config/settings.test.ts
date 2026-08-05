@@ -93,6 +93,19 @@ describe('loadConfig — numeric limits fail closed', () => {
     expect(config.maxResultChars).toBe(2000);
   });
 
+  it('parses the PATCH kill switch case-insensitively', () => {
+    process.env.MCP_SL_PATCH_ENABLED = 'FALSE';
+    expect(loadConfig().slPatchEnabled).toBe(false);
+  });
+
+  it.each(['0', 'disabled', 'tru', '1'])(
+    'fails closed for invalid MCP_SL_PATCH_ENABLED="%s"',
+    (value) => {
+      process.env.MCP_SL_PATCH_ENABLED = value;
+      expect(loadConfig().slPatchEnabled).toBe(false);
+    },
+  );
+
   it.each(['abc', 'NaN', '0', '-1', ''])(
     'falls back to the 60s default for MCP_QUERY_TIMEOUT_MS="%s"',
     (value) => {
