@@ -39,6 +39,42 @@ Or add to your Claude Code MCP config:
 }
 ```
 
+### Transitive dependency advisories
+
+`sps-sap-interface` declares its dependencies with **exact pins**
+(`axios: 0.25.0`, `express: 4.17.1`, `@sap/hana-client: 2.18.22`), so a default
+install resolves known-vulnerable versions and `npm audit` reports roughly 16
+advisories, 9 of them high.
+
+Only `axios`, `express` and `cors` carry the high-severity ones, and they are
+reachable exclusively through `sps-sap-interface`'s `ServiceLayer.js` /
+`Xsjs.js`. **This server does not import either**: Service Layer traffic goes
+through the local strict-TLS adapter in `src/sl/serviceLayerAdapter.ts`, and
+only `DirectDb` is loaded from the dependency. The vulnerable packages are
+installed on disk but never executed on any code path this server uses.
+
+`overrides` declared inside a published package are ignored by npm — they apply
+only at the root of an install. To clear the advisories, add this to **your
+own** `package.json` and reinstall:
+
+```json
+{
+  "overrides": {
+    "axios": "^0.33.0",
+    "express": "^4.21.2",
+    "cors": "^2.8.6",
+    "@sap/hana-client": "^2.21.31",
+    "uuid": "^11.1.1"
+  }
+}
+```
+
+Verified: this takes a consumer install to `found 0 vulnerabilities`. Note that
+`npx -y sps-mcp-server` runs from a temporary directory with no root
+`package.json`, so overrides cannot apply there. If a clean audit matters in
+your environment, install the server into a real project (or a managed global
+prefix) that carries the block above rather than invoking it through `npx`.
+
 ## Connection profiles
 
 The server starts unconnected. Connections are loaded from

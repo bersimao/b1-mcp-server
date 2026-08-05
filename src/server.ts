@@ -12,6 +12,7 @@
 //
 // ============================================================================
 
+import { createRequire } from 'node:module';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { loadConfig, Config } from './config/settings.js';
 import { AuditLogger } from './logging/auditLogger.js';
@@ -26,6 +27,13 @@ import { registerConnectDatabaseTool } from './tools/connectDatabase.js';
 import { registerServiceLayerTool } from './tools/executeServiceLayer.js';
 import { OperationCoordinator } from './security/operationCoordinator.js';
 import { ServiceLayerTrustStore } from './security/serviceLayerTrustStore.js';
+
+// Read from package.json rather than hardcoding: a literal here silently drifted
+// to 1.0.0 while the package was 1.1.0, and serverInfo.version is what an
+// operator reads to confirm a restart actually picked up new code.
+// '../package.json' resolves identically from src/ (tsx, vitest) and dist/
+// (published: node_modules/sps-mcp-server/dist/server.js -> ../package.json).
+const SERVER_VERSION: string = createRequire(import.meta.url)('../package.json').version;
 
 /**
  * Creates, initialises, and returns the MCP server.
@@ -56,7 +64,7 @@ export async function createServer(
   // Create MCP server
   const server = new McpServer({
     name: 'sps-mcp-server',
-    version: '1.0.0',
+    version: SERVER_VERSION,
   });
 
   // Register tools — all tools share the same adapters (single active connection)
