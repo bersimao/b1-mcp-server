@@ -12,6 +12,7 @@ const config: Config = {
   connectionsFile: '', maxQueryLength: 8000, auditLogPath: '', logLevel: 'error',
   rateLimitMaxCalls: 100, rateLimitWindowMs: 60000, queryTimeoutMs: 60000,
   slTimeoutMs: 30000, slTrustFile: '', slMaxUrlLength: 2048, slMaxBodyChars: 50000, slPatchEnabled: true,
+  elicitationTimeoutMs: 120000,
   maxResultRows: 500, maxResultChars: 100000, dryRun: false,
 };
 
@@ -87,5 +88,36 @@ describe('execute_service_layer PATCH approval', () => {
     );
     expect(result.isError).toBe(true);
     expect(ctx.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('execute_service_layer GET result caps', () => {
+  it('truncates and announces an oversized GET instead of dumping it into context', async () => {
+    // The adapter bounds the RAW response, but pretty-printing inflates it well
+    // past that cap. Without the shared renderer, a single GET could push a
+    // multiple of maxResultChars into the model's context.
+    const { handler, execute } = capture({ maxResultChars: 2_000 });
+    execute.mockResolvedValue({
+      data: { value: Array.from({ length: 400 }, (_, i) => ({ ItemCode: `A${i}`, Note: 'x'.repeat(80) })) },
+      durationMs: 5,
+    });
+
+    const result = await handler({ method: 'GET', url: 'Items' }, {});
+    const text: string = result.content[0].text;
+
+    expect(result.isError).toBeUndefined();
+    expect(text).toContain('TRUNCATED');
+    expect(text.length).toBeLessThan(2_500);
+  });
+
+  it('leaves a small GET payload intact', async () => {
+    const { handler, execute } = capture();
+    execute.mockResolvedValue({ data: { value: [{ ItemCode: 'A1' }] }, durationMs: 2 });
+
+    const result = await handler({ method: 'GET', url: "Items('A1')" }, {});
+    const text: string = result.content[0].text;
+
+    expect(text).not.toContain('TRUNCATED');
+    expect(text).toContain('"ItemCode": "A1"');
   });
 });

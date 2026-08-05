@@ -55,7 +55,7 @@ function setup() {
     connectionsFile, auditLogPath: '', logLevel: 'error', maxQueryLength: 8000,
     rateLimitMaxCalls: 100, rateLimitWindowMs: 60000, queryTimeoutMs: 60000,
     slTimeoutMs: 30000, slTrustFile: trustFile, slMaxUrlLength: 2048,
-    slMaxBodyChars: 50000, slPatchEnabled: true, maxResultRows: 500,
+    slMaxBodyChars: 50000, slPatchEnabled: true, elicitationTimeoutMs: 120000, maxResultRows: 500,
     maxResultChars: 100000, dryRun: false,
   };
   let handler!: (args: { query: string }, extra: any) => Promise<any>;
@@ -118,5 +118,27 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(result.content[0].text).toContain('credentials were not sent');
     expect(ctx.db.isConnected()).toBe(true);
     expect(ctx.slInit).not.toHaveBeenCalled();
+  });
+
+  it('does not spend a SAP lockout attempt on a profile with an empty slPassword', async () => {
+    // SAP B1 counts an empty-password login like any other failure, and the
+    // account locks after a few. A guaranteed-invalid attempt must never be sent.
+    const ctx = setup();
+    writeProfiles(ctx.connectionsFile, [{
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+      dbServer: 'db:30015', dbUser: 'db-user', dbPassword: 'db-secret',
+      slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user',
+    }]);
+    const sendRequest = vi.fn();
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest });
+
+    expect(result.content[0].text).toContain('slPassword is missing or empty');
+    expect(ctx.slInit).not.toHaveBeenCalled();
+    // No network reached: neither the certificate inspection nor a login ran.
+    expect(inspectCertificate).not.toHaveBeenCalled();
+    expect(sendRequest).not.toHaveBeenCalled();
+    // DB side is unaffected and stays usable.
+    expect(ctx.db.isConnected()).toBe(true);
   });
 });

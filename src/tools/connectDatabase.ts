@@ -106,7 +106,7 @@ async function resolveServiceLayerTls(
           required: ['trustCertificate'],
         },
       },
-    }, ElicitResultSchema);
+    }, ElicitResultSchema, { timeout: config.elicitationTimeoutMs });
   } catch {
     throw new Error('Service Layer TLS certificate is untrusted and the MCP client did not complete explicit certificate approval; credentials were not sent.');
   }
@@ -233,6 +233,16 @@ Use "list" as the query to reload and list all available profiles.`,
         };
       }
 
+      // DELIBERATE: the certificate-approval prompt inside this section holds
+      // the global coordinator lock, so the whole server stalls while a human
+      // decides. That is the correct trade here, and the opposite of the PATCH
+      // path, which elicits *outside* the lock on purpose: PATCH approval does
+      // not invalidate concurrent reads, whereas this block is mid-switch and
+      // every adapter it touches is in an indeterminate state. Letting another
+      // tool run against a half-switched connection is exactly what the
+      // coordinator exists to prevent. The stall is bounded by
+      // config.elicitationTimeoutMs. Do not "optimise" this by moving the
+      // elicitation out without first making the switch itself two-phase.
       return coordinator.runExclusive(async () => {
 
       // Connection profiles are intentionally reloaded on every connection
@@ -369,7 +379,14 @@ Use "list" as the query to reload and list all available profiles.`,
       let slLoginAttempted = false;
       let slTrustAction: ResolvedTlsConfig['trustAction'] | undefined;
 
-      if (hasSl && !slAlreadyOnTarget) {
+      if (hasSl && !slAlreadyOnTarget && !profile.slPassword) {
+        // An empty password is a guaranteed rejection, and SAP B1 counts it
+        // against the account's lockout threshold like any other bad login.
+        // Fail locally instead of spending one of the user's few attempts.
+        slError =
+          'slPassword is missing or empty for this profile. No login was attempted, ' +
+          'because an empty password would count towards SAP B1 account lockout.';
+      } else if (hasSl && !slAlreadyOnTarget) {
         try {
           const tls = await resolveServiceLayerTls(profile, config, trustStore, extra);
           slTrustAction = tls.trustAction;

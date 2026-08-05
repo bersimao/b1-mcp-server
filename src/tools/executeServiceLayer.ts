@@ -11,6 +11,7 @@ import { OperationType } from '../types/index.js';
 import { RateLimiter } from '../rateLimit/rateLimiter.js';
 import { OperationCoordinator } from '../security/operationCoordinator.js';
 import { validateServiceLayerRequest } from '../security/serviceLayerPolicy.js';
+import { formatResult } from './formatResult.js';
 
 export function registerServiceLayerTool(
   server: McpServer,
@@ -125,7 +126,7 @@ PATCH accepts one directly keyed entity endpoint only. Navigation paths, query o
                 required: ['approve'],
               },
             },
-          }, ElicitResultSchema);
+          }, ElicitResultSchema, { timeout: config.elicitationTimeoutMs });
 
           if (approval.action !== 'accept' || approval.content?.approve !== true) {
             logger.log(logger.createEntry({
@@ -176,7 +177,11 @@ PATCH accepts one directly keyed entity endpoint only. Navigation paths, query o
           intent.durationMs = result.durationMs;
           intent.reason = `${method} completed successfully.`;
           logger.log(intent);
-          const data = result.data == null ? '(no data)' : JSON.stringify(result.data, null, 2);
+          // Same renderer as execute_sql. The adapter bounds the *raw* response
+          // at maxResponseChars, but pretty-printing inflates it well past that
+          // (indent 2 on a dense OData payload roughly triples it), so the cap
+          // has to be reapplied to what actually reaches the model's context.
+          const data = result.data == null ? '(no data)' : formatResult(result.data, config);
           return {
             content: [{ type: 'text' as const, text: `[DB: ${targetDb}] ${method} ${validated.url} — ${result.durationMs}ms\n${data}` }],
           };

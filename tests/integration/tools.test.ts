@@ -48,6 +48,7 @@ function createTestConfig(overrides: Partial<Config> = {}): Config {
     slMaxUrlLength: 2048,
     slMaxBodyChars: 50000,
     slPatchEnabled: true,
+    elicitationTimeoutMs: 120000,
     maxResultRows: 500,
     maxResultChars: 100000,
     dryRun: false,

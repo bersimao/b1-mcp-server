@@ -100,22 +100,35 @@ export class ConnectionManager {
         return;
       }
 
-      this.profiles = parsed
-        .filter((p: any) => p.id && p.dbType && p.dbName)
-        .map((p: any) => ({
-          id: String(p.id).trim(),
-          dbType: String(p.dbType).trim().toLowerCase() === 'mssql' ? 'mssql' as DbType : 'hana' as DbType,
-          dbServer: String(p.dbServer || '').trim(),
-          dbName: String(p.dbName).trim(),
-          dbUser: String(p.dbUser || '').trim(),
-          dbPassword: String(p.dbPassword || '').trim(),
-          slUrl: p.slUrl ? String(p.slUrl).trim() : undefined,
-          slUser: p.slUser ? String(p.slUser).trim() : undefined,
-          slPassword: p.slPassword ? String(p.slPassword).trim() : undefined,
-          slTlsMode: parseSlTlsMode(p.slTlsMode),
-          slTlsServerName: p.slTlsServerName ? String(p.slTlsServerName).trim() : undefined,
-          slCertificateSha256: p.slCertificateSha256 ? String(p.slCertificateSha256).trim() : undefined,
-        }));
+      // Parsed per profile, not with a single .map(): a throw from one bad
+      // field (an invalid slTlsMode, say) used to escape to the outer catch and
+      // leave `profiles` empty, so one typo silently disabled every unrelated
+      // environment in the file. Skip the offending profile, keep the rest.
+      const accepted: ConnectionProfile[] = [];
+      for (const p of parsed as any[]) {
+        if (!p?.id || !p.dbType || !p.dbName) continue;
+        try {
+          accepted.push({
+            id: String(p.id).trim(),
+            dbType: String(p.dbType).trim().toLowerCase() === 'mssql' ? 'mssql' as DbType : 'hana' as DbType,
+            dbServer: String(p.dbServer || '').trim(),
+            dbName: String(p.dbName).trim(),
+            dbUser: String(p.dbUser || '').trim(),
+            dbPassword: String(p.dbPassword || '').trim(),
+            slUrl: p.slUrl ? String(p.slUrl).trim() : undefined,
+            slUser: p.slUser ? String(p.slUser).trim() : undefined,
+            slPassword: p.slPassword ? String(p.slPassword).trim() : undefined,
+            slTlsMode: parseSlTlsMode(p.slTlsMode),
+            slTlsServerName: p.slTlsServerName ? String(p.slTlsServerName).trim() : undefined,
+            slCertificateSha256: p.slCertificateSha256 ? String(p.slCertificateSha256).trim() : undefined,
+          });
+        } catch (err: any) {
+          console.error(
+            `[connectionManager] Skipping profile "${String(p.id).trim()}": ${err.message}`,
+          );
+        }
+      }
+      this.profiles = accepted;
 
       this.loaded = true;
       console.error(`[connectionManager] Loaded ${this.profiles.length} connection profile(s) from ${this.filePath}`);

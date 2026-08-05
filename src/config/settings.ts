@@ -47,6 +47,13 @@ export interface Config {
   /** Emergency kill switch for Service Layer PATCH. */
   slPatchEnabled: boolean;
 
+  /**
+   * How long a human gets to answer an approval form (certificate trust, PATCH)
+   * before the request fails closed. The SDK's own default is 60 s, which is
+   * short for someone actually reading a PATCH body before accepting it.
+   */
+  elicitationTimeoutMs: number;
+
   /** Max rows of a result set rendered back to the model. */
   maxResultRows: number;
 
@@ -134,6 +141,8 @@ export function loadConfig(): Config {
     slMaxBodyChars: positiveIntEnv('MCP_SL_MAX_BODY_CHARS', 50_000),
 
     slPatchEnabled: process.env.MCP_SL_PATCH_ENABLED !== 'false',
+
+    elicitationTimeoutMs: positiveIntEnv('MCP_ELICITATION_TIMEOUT_MS', 120_000),
 
     // Result caps. A SELECT with no WHERE can otherwise dump OUSR or SYS.USERS
     // straight into the model's context. 500 rows clears every realistic B1

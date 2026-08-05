@@ -65,6 +65,21 @@ describe('ConnectionManager.find', () => {
     expect(manager.listAll()).toEqual([]);
   });
 
+  it('drops only the malformed profile, never its siblings', () => {
+    // A throw from one bad field used to escape to load()'s catch and empty the
+    // whole list, so a typo in one profile silently disabled every unrelated
+    // environment — including production ones the user never touched.
+    const manager = createManagerWithProfiles([
+      { id: 'good_before', dbType: 'hana', dbName: 'SBO_BEFORE' },
+      { id: 'broken', dbType: 'hana', dbName: 'SBO_BROKEN', slTlsMode: 'insecure' },
+      { id: 'good_after', dbType: 'mssql', dbName: 'SBO_AFTER' },
+    ]);
+
+    expect(manager.listAll().map(p => p.id)).toEqual(['good_before', 'good_after']);
+    expect(manager.find('broken')).toBeUndefined();
+    expect(manager.find('good_after')?.dbName).toBe('SBO_AFTER');
+  });
+
   it('returns exact match by dbName', () => {
     const manager = createManagerWithProfiles([
       { id: 'alpha', dbType: 'hana', dbName: 'SBO_ALPHA' },

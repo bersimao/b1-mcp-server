@@ -213,6 +213,7 @@ All optional.
 | `MCP_SL_MAX_URL_LENGTH` | `2048` | Maximum relative OData URL length |
 | `MCP_SL_MAX_BODY_CHARS` | `50000` | Maximum serialised PATCH body length |
 | `MCP_SL_PATCH_ENABLED` | `true` | Emergency PATCH kill switch; set to `false` to disable writes |
+| `MCP_ELICITATION_TIMEOUT_MS` | `120000` | How long a human gets to answer an approval form (certificate trust, PATCH) before it fails closed |
 | `MCP_MAX_RESULT_ROWS` | `500` | Max rows returned to the model; extra rows are cut and announced |
 | `MCP_MAX_RESULT_CHARS` | `100000` | Max characters of result JSON, applied after the row cap |
 | `MCP_DRY_RUN` | `false` | If `true`, validate but don't execute |
