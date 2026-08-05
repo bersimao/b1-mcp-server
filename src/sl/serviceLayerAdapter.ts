@@ -193,6 +193,9 @@ class PinnedHttpsAgent extends Agent {
   }
 }
 
+/** Upper bound for the best-effort server-side Logout during disconnect. */
+const LOGOUT_TIMEOUT_MS = 5_000;
+
 export class ServiceLayerAdapter {
   private dbName = '';
   private slUrl = '';
@@ -313,7 +316,12 @@ export class ServiceLayerAdapter {
     const wasInitialised = this.initialised;
     const slUrl = this.slUrl;
     const cookie = this.cookie;
-    const timeoutMs = this.timeoutMs;
+    // The Logout is best effort and runs while the operation coordinator is
+    // held, so it gets a short budget rather than the full request timeout.
+    // An unreachable host (dropped VPN, wrong network) is exactly when a
+    // profile switch is most urgent, and a black-holed route only fails on
+    // timeout — the full slTimeoutMs would freeze the whole server for it.
+    const timeoutMs = Math.min(this.timeoutMs, LOGOUT_TIMEOUT_MS);
     const maxResponseChars = this.maxResponseChars;
     const pinnedAgent = this.pinnedAgent;
 

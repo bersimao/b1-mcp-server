@@ -111,6 +111,29 @@ describe('ServiceLayerAdapter secure transport', () => {
     expect(adapter.isConnected()).toBe(false);
   });
 
+  it('caps the best-effort Logout well below the configured request timeout', async () => {
+    // disconnect() runs while the operation coordinator is held. A black-holed
+    // host only fails on timeout, so granting the Logout the full slTimeoutMs
+    // would freeze every tool for 30s exactly when a profile switch is urgent.
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(loginResponse())
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    const adapter = new ServiceLayerAdapter();
+    await adapter.init({
+      database: 'SBO_TEST', username: 'manager', password: 'secret',
+      url: 'https://sap.local/b1s/v2', timeoutMs: 30_000,
+    });
+    expect(timeoutSpy).toHaveBeenLastCalledWith(30_000);
+
+    await adapter.disconnect();
+
+    expect(timeoutSpy).toHaveBeenLastCalledWith(5_000);
+    timeoutSpy.mockRestore();
+  });
+
   it('finishes local disconnect when Service Layer Logout fails', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(loginResponse())

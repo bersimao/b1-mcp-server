@@ -302,6 +302,21 @@ Use "list" as the query to reload and list all available profiles.`,
         const partialMatches = connectionManager.findPartialMatches(query);
         const allProfiles = connectionManager.listAll();
 
+        const duplicates = connectionManager.findExactDuplicates(query);
+        if (duplicates.length > 1) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text:
+                `"${query}" matches ${duplicates.length} profiles exactly:\n` +
+                duplicates.map(p => `  - ${p.id} -> ${p.dbName} (${p.dbType})`).join('\n') +
+                `\n\nRefusing to guess which environment you meant. Give each profile a unique ` +
+                `id in ${connectionManager.getFilePath()} and try again.`,
+            }],
+            isError: true,
+          };
+        }
+
         if (partialMatches.length > 1) {
           return {
             content: [{
@@ -364,8 +379,14 @@ Use "list" as the query to reload and list all available profiles.`,
         }
       }
 
+      // A side the profile no longer configures must be DOWN, not merely
+      // ignored. Deleting the SL fields from a profile is how an operator
+      // revokes Service Layer access; without this the old session would stay
+      // usable until process restart, because its key can never match again
+      // and the probe above only runs on matching sides.
       const everyConfiguredSideIsHealthy =
-        (!hasDb || dbAlreadyOnTarget) && (!hasSl || slAlreadyOnTarget);
+        (hasDb ? dbAlreadyOnTarget : !adapter.isConnected()) &&
+        (hasSl ? slAlreadyOnTarget : !slAdapter.isConnected());
       if (everyConfiguredSideIsHealthy && (hasDb || hasSl)) {
         return {
           content: [{

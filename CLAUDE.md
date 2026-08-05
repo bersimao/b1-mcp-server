@@ -33,7 +33,7 @@ npm install                        # one-time
 npm run build                      # tsc — prebuild wipes dist/ for a clean output
 npm run watch                      # tsc --watch
 npm run dev                        # tsx src/index.ts (skips build)
-npm test                           # vitest run — full suite (403 tests)
+npm test                           # vitest run — full suite (406 tests)
 npm run test:watch                 # vitest in watch mode
 
 # Single file

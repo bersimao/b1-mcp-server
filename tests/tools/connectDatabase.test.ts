@@ -244,6 +244,49 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(result.content[0].text).toContain('ServiceLayer: Connected');
   });
 
+  it('ends the Service Layer session once the profile stops configuring it', async () => {
+    // Deleting the SL fields is how an operator revokes Service Layer access.
+    // The early return only inspects configured sides, so the live session used
+    // to survive with its cookie until the process restarted.
+    const ctx = setup();
+    const profile = {
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+      dbServer: 'db:30015', dbUser: 'db-user', dbPassword: 'db-secret',
+      slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+    };
+    Object.assign(ctx.sl, {
+      dbName: 'SBO_CLIENT', slUrl: profile.slUrl, cookie: 'B1SESSION=live',
+      initialised: true, connectionKey: slConnectionKey(profile),
+    });
+    const { slUrl, slUser, slPassword, ...dbOnly } = profile;
+    writeProfiles(ctx.connectionsFile, [dbOnly]);
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest: vi.fn() });
+
+    expect(result.isError).toBeFalsy();
+    expect(ctx.sl.isConnected()).toBe(false);
+    expect(ctx.sl.getSlUrl()).toBe('');
+    expect(ctx.slInit).not.toHaveBeenCalled();
+    expect(ctx.db.isConnected()).toBe(true);
+  });
+
+  it('refuses to guess between profiles sharing the same id', async () => {
+    const ctx = setup();
+    writeProfiles(ctx.connectionsFile, [
+      { id: 'client', dbType: 'hana', dbName: 'SBO_HMG', dbServer: 'hmg:30015', dbUser: 'u', dbPassword: 'p' },
+      { id: 'client', dbType: 'hana', dbName: 'SBO_PROD', dbServer: 'prod:30015', dbUser: 'u', dbPassword: 'p' },
+    ]);
+
+    const result = await ctx.handler({ query: 'client' }, { sendRequest: vi.fn() });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('matches 2 profiles exactly');
+    expect(result.content[0].text).toContain('SBO_PROD');
+    // The old message told the user to retry with the exact id they just typed.
+    expect(result.content[0].text).not.toContain('retry using the exact profile ID');
+    expect(ctx.directDb.init).not.toHaveBeenCalled();
+  });
+
   it('reconnects Service Layer when a matching session fails its health check', async () => {
     const ctx = setup();
     const profile = {

@@ -205,6 +205,26 @@ export class ConnectionManager {
   }
 
   /**
+   * Returns the profiles that made `find` fail because an EXACT match on id or
+   * dbName was not unique. An empty array means the query was not ambiguous at
+   * the exact level, so any failure came from a partial match instead.
+   *
+   * Lets the caller say "your file has duplicate ids" rather than the useless
+   * "retry using the exact profile ID" — which is what the user already typed.
+   */
+  findExactDuplicates(query: string): ConnectionProfile[] {
+    if (!this.loaded) this.load();
+    const q = query.toLowerCase().trim();
+    if (!q) return [];
+
+    const byId = this.profiles.filter(p => p.id.toLowerCase() === q);
+    if (byId.length > 1) return byId;
+
+    const byDbName = this.profiles.filter(p => p.dbName.toLowerCase() === q);
+    return byDbName.length > 1 ? byDbName : [];
+  }
+
+  /**
    * Returns profiles that match a case-insensitive partial query.
    */
   findPartialMatches(query: string): ConnectionProfile[] {
