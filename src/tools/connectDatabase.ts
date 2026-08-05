@@ -344,9 +344,9 @@ Use "list" as the query to reload and list all available profiles.`,
       }
 
       // --- Determine what needs (re)connecting ---
-      // When switching to a different environment, BOTH previous connections
-      // must be ended first so we never have DB on one env and SL on another.
-      // When retrying a failed side on the SAME profile, only connect that side.
+      // Connection keys are independent per side. A healthy side that already
+      // matches the selected profile stays active; every non-matching side is
+      // ended before its replacement is connected below.
       const hasDb = hasDbCredentials(profile);
       const hasSl = hasSlCredentials(profile);
       const dbTargetKey = dbConnectionKey(profile);
