@@ -13,7 +13,7 @@
 //
 // ============================================================================
 
-import { appendFileSync, mkdirSync, existsSync } from 'fs';
+import { appendFileSync, chmodSync, mkdirSync, existsSync, statSync } from 'fs';
 import { dirname } from 'path';
 import { AuditEntry, DbType, OperationType, TableType } from '../types/index.js';
 import { classifyTable } from '../guardrails/tableClassifier.js';
@@ -31,7 +31,11 @@ export class AuditLogger {
       this.logPath = config.auditLogPath;
       const dir = dirname(this.logPath);
       if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
+        mkdirSync(dir, { recursive: true, mode: 0o700 });
+      }
+      if (existsSync(this.logPath) && process.platform !== 'win32') {
+        const mode = statSync(this.logPath).mode & 0o777;
+        if (mode !== 0o600) chmodSync(this.logPath, 0o600);
       }
     } else {
       this.logPath = null;
@@ -58,7 +62,7 @@ export class AuditLogger {
     // Append to file if configured
     if (this.logPath) {
       try {
-        appendFileSync(this.logPath, line + '\n', 'utf8');
+        appendFileSync(this.logPath, line + '\n', { encoding: 'utf8', mode: 0o600 });
       } catch (err) {
         console.error(`[audit] Failed to write to ${this.logPath}:`, err);
       }

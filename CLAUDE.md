@@ -18,9 +18,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`sps-mcp-server` is a Model Context Protocol server that gives an AI client guarded access to SAP Business One via both `DirectDb` (HANA / MS SQL) and the Service Layer OData API. Both adapters come from the `sps-sap-interface` npm module.
+`sps-mcp-server` is a Model Context Protocol server that gives an AI client guarded access to SAP Business One via both `DirectDb` (HANA / MS SQL) and the Service Layer OData API. DirectDb comes from `sps-sap-interface`; Service Layer uses the local verified-TLS fetch adapter.
 
-**Read-only posture:** the DirectDb/SQL path executes only `SELECT` (and anonymous blocks whose statements are all reads); every `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` is blocked at the guardrail — there is no confirmation bypass. The Service Layer path allows `GET` and `PATCH` only (`PATCH` is safe because the Service Layer commits atomically, unlike the shared DirectDb pool). Writes are the human's job: the AI hands the SQL to a person who runs it in a real DB client.
+**Read-only SQL posture:** DirectDb executes only `SELECT` (and anonymous blocks whose statements are all reads); every `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` is blocked. Service Layer allows `GET` and guarded `PATCH`. PATCH requires a directly keyed entity and explicit user acceptance through MCP form elicitation; clients without elicitation support fail closed. SQL writes remain the human's job.
 
 The server starts **without** any database or Service Layer connection. The AI must call `connect_database` to load a profile from `~/.claude/connections.json` and connect both sides at once. There is no env-var fallback — credentials live exclusively in that file.
 
@@ -59,17 +59,18 @@ npm pack --dry-run
 
 ### Connection model
 
-`DirectDb` and `ServiceLayer` are singletons exported from `sps-sap-interface`. Their `init()` methods can be re-called to switch environments. Thin wrappers:
+`DirectDb` is the singleton exported from `sps-sap-interface`. The local Service Layer adapter deliberately bypasses the dependency's insecure `rejectUnauthorized:false` implementation. Thin wrappers:
 
 - [src/db/adapter.ts](src/db/adapter.ts) — `DbAdapter`
-- [src/sl/serviceLayerAdapter.ts](src/sl/serviceLayerAdapter.ts) — `ServiceLayerAdapter`
+- [src/sl/serviceLayerAdapter.ts](src/sl/serviceLayerAdapter.ts) — strict-by-default TLS `ServiceLayerAdapter` with explicit per-profile certificate pinning compatibility; retains only the session cookie
 
 Each adapter tracks `dbName` and `dbType` but does **not** retain credentials after init.
 
 [src/tools/connectDatabase.ts](src/tools/connectDatabase.ts) implements the safe dual-connection switch:
 
-- Connecting to a new environment **always disconnects both** previous DB and SL first (prevents cross-environment operations).
-- Partial success is allowed: if SL fails on the new target, DB stays active (and vice versa). Retrying the same profile reconnects only the failed side.
+- `OperationCoordinator` serializes every operation and environment switch.
+- Connecting to a new environment disconnects both sides and closes the old DirectDb pool first.
+- Partial success is allowed: if SL fails on the new target, DB stays active (and vice versa). Retrying the same profile reconnects only the failed side. Profiles reload on every connection call, so adding SL fields to an already-active DB-only profile initializes only SL.
 - Failed login attempts are tracked per profile/side; a warning is appended after `SAP_LOCKOUT_WARNING_THRESHOLD = 3` — SAP B1 locks accounts after repeated failures.
 
 Profile matching (`ConnectionManager.find` in [src/config/connectionManager.ts](src/config/connectionManager.ts)): exact `id` → exact `dbName` → **unique** partial substring match. Ambiguous partials (multiple profiles share the substring) return `undefined` and the tool surfaces the candidate list instead of guessing.
@@ -78,7 +79,7 @@ Profile matching (`ConnectionManager.find` in [src/config/connectionManager.ts](
 
 - `DirectDb.executeQuery(query, params?)` — `{db}` is the schema placeholder DirectDb resolves at runtime; `?` is the parameter placeholder. This read-only server only ever issues `SELECT`, so `?` binding always applies. On MS SQL, DirectDb rewrites each `?` to `@mssqlboundparmN` before handing the statement to `mssql`.
 - `DirectDb.init({ …, timeout })` — one value, two meanings: HANA `communicationTimeout`, MS SQL `connectionTimeout` **and** `requestTimeout`. DirectDb's own default is 600 000 ms; `connect_database` overrides it with `config.queryTimeoutMs` (`MCP_QUERY_TIMEOUT_MS`, default 60 s). This is the only cost ceiling in the server — the row cap runs after the DB has already done the work. Both engines were measured killing the statement server-side (`SYS.M_ACTIVE_STATEMENTS` / `sys.dm_exec_requests`), and both pools survive repeated timeouts (12 poisons → 25/25 clean). They differ in how the abort *looks*: MS SQL cancels the request and reports `Timeout: Request failed to complete in Nms`, but **HANA drops the socket**, so a timed-out query surfaces as `Connection down: [89012] Socket recv timeout` with no mention of a timeout at all — don't chase that as a network fault. `hana-client` reconnects transparently, so the next query just works.
-- `ServiceLayer.execute({ method, url, data?, header?, page?, size?, timeout? })` — auto-reconnects on 401.
+- Service Layer uses native `fetch` for strict TLS and a pinned native HTTPS transport for approved legacy endpoints. Both `/b1s/v1` (OData v3) and `/b1s/v2` (OData v4) profile roots are preserved exactly; the security policy validates only version-neutral relative endpoints. Invalid certificates are inspected without credentials and require MCP form elicitation before their exact fingerprint is saved in the local owner-only trust store. Changed certificates require approval again. Redirects are disabled, requests have fixed timeouts and bounded responses, and pins are checked before login credentials can be transmitted. A 401 requires reconnecting the profile; credentials are not retained for automatic login.
 
 ### MCP tools
 
@@ -88,7 +89,7 @@ Every tool is registered in [src/server.ts](src/server.ts) and shares the same a
 |---|---|---|
 | `connect_database` | [tools/connectDatabase.ts](src/tools/connectDatabase.ts) | Switch active DB + SL; `"list"` to enumerate profiles |
 | `execute_sql` | [tools/executeSql.ts](src/tools/executeSql.ts) | Runs SQL (user- or AI-written) — **read-only**: only SELECT and read-only anonymous blocks pass `validateAnySql()` |
-| `execute_service_layer` | [tools/executeServiceLayer.ts](src/tools/executeServiceLayer.ts) | OData **GET / PATCH only**; POST/PUT/DELETE blocked server-side |
+| `execute_service_layer` | [tools/executeServiceLayer.ts](src/tools/executeServiceLayer.ts) | OData GET plus keyed, user-approved PATCH; POST/PUT/DELETE blocked |
 | `get_schema_info` | [tools/schemaIntrospection.ts](src/tools/schemaIntrospection.ts) | Read-only metadata, HANA + MSSQL catalog syntax. Fixed catalog SELECTs; the `filter` is bound as `?`, never interpolated — this is the only SQL path that skips the guardrail engine, so the bind is the whole defence |
 | `check_connection` | [tools/checkConnection.ts](src/tools/checkConnection.ts) | Independent health pings for DB and SL |
 
@@ -155,7 +156,7 @@ scripts/
 4. **Server is the authority on SQL safety.** The live SQL path is read-only: `validateAnySql()` executes only `SELECT`. Anonymous `DO BEGIN..END` / `BEGIN..END` blocks are classified by their most dangerous inner statement, so a write/exec hidden behind a trailing `SELECT` is still blocked — trust does not depend on the AI pre-validating.
 5. **HANA vs MSSQL syntax differs** throughout (e.g. `CALL` vs `EXEC`, `DO BEGIN` vs `BEGIN`, schema-introspection queries). When adding features, handle both.
 6. **`{db}` placeholder** appears in every generated query so DirectDb resolves the schema for the active profile.
-7. **Credentials never leave the server process.** Profile listings expose only `id`, `dbName`, `dbType`, `slUrl`, capability flags. Adapters do not retain passwords. Nothing is interpolated into tool responses, audit entries, or error messages.
+7. **Credentials never leave through the MCP protocol.** Profile listings expose only `id`, `dbName`, `dbType`, `slUrl`, capability flags. Adapters do not retain passwords. Nothing is interpolated into tool responses, audit entries, or error messages. This does not prevent a same-user AI shell/filesystem tool from opening `connections.json`; deployment documentation requires managed hooks/sandboxing and identifies separate OS identity as the strong boundary.
 
 ## Tech stack
 

@@ -32,6 +32,21 @@ export interface Config {
   /** Statement/communication timeout handed to DirectDb.init(), in milliseconds. */
   queryTimeoutMs: number;
 
+  /** Timeout for Service Layer login and requests, in milliseconds. */
+  slTimeoutMs: number;
+
+  /** Local certificate trust-on-first-use store (contains no credentials). */
+  slTrustFile: string;
+
+  /** Maximum relative Service Layer URL length. */
+  slMaxUrlLength: number;
+
+  /** Maximum serialised PATCH body length. */
+  slMaxBodyChars: number;
+
+  /** Emergency kill switch for Service Layer PATCH. */
+  slPatchEnabled: boolean;
+
   /** Max rows of a result set rendered back to the model. */
   maxResultRows: number;
 
@@ -109,6 +124,16 @@ export function loadConfig(): Config {
     // DirectDb's own default is 600 000 ms — ten minutes of a runaway join on a
     // production box, with the model blocked the whole time.
     queryTimeoutMs: positiveIntEnv('MCP_QUERY_TIMEOUT_MS', 60_000),
+
+    slTimeoutMs: positiveIntEnv('MCP_SL_TIMEOUT_MS', 30_000),
+
+    slTrustFile: process.env.MCP_SL_TRUST_FILE || resolve(homedir(), '.claude', 'service-layer-trust.json'),
+
+    slMaxUrlLength: positiveIntEnv('MCP_SL_MAX_URL_LENGTH', 2_048),
+
+    slMaxBodyChars: positiveIntEnv('MCP_SL_MAX_BODY_CHARS', 50_000),
+
+    slPatchEnabled: process.env.MCP_SL_PATCH_ENABLED !== 'false',
 
     // Result caps. A SELECT with no WHERE can otherwise dump OUSR or SYS.USERS
     // straight into the model's context. 500 rows clears every realistic B1

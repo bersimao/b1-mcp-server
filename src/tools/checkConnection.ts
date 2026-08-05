@@ -9,10 +9,12 @@ import { AuditLogger } from '../logging/auditLogger.js';
 import { Config } from '../config/settings.js';
 import { OperationType } from '../types/index.js';
 import { RateLimiter } from '../rateLimit/rateLimiter.js';
+import { OperationCoordinator } from '../security/operationCoordinator.js';
 
 export function registerCheckConnectionTool(
   server: McpServer, adapter: DbAdapter, slAdapter: ServiceLayerAdapter,
   logger: AuditLogger, _config: Config, rateLimiter: RateLimiter,
+  coordinator: OperationCoordinator,
 ): void {
 
   server.tool(
@@ -26,6 +28,8 @@ No parameters required. Reports status for both connections.`,
       if (!rateCheck.allowed) {
         return { content: [{ type: 'text' as const, text: `Rate limit exceeded for check_connection. Try again in ${Math.ceil(rateCheck.retryAfterMs / 1000)}s.` }], isError: true };
       }
+
+      return coordinator.runExclusive(async () => {
 
       const lines: string[] = [];
       let anyConnected = false;
@@ -70,7 +74,7 @@ No parameters required. Reports status for both connections.`,
           dbType: adapter.getDbType(),
           operation: OperationType.SELECT,
           tables: [],
-          query: `GET Branches?$apply=aggregate($count as Count)`,
+          query: `GET Branches?$select=Code&$top=1`,
           decision: 'ALLOW',
           reason: 'Connection health check (ServiceLayer).',
           rule: 'checkConnection',
@@ -78,6 +82,7 @@ No parameters required. Reports status for both connections.`,
 
         if (result.connected) {
           lines.push(`ServiceLayer: Connected to "${slDbName}" via ${slUrl} — ${result.durationMs}ms`);
+          lines.push(`ServiceLayer TLS: ${slAdapter.getTlsStatus()}`);
           anyConnected = true;
         } else {
           lines.push(`ServiceLayer: Connection to "${slDbName}" via ${slUrl} FAILED — ${result.error}`);
@@ -95,6 +100,7 @@ No parameters required. Reports status for both connections.`,
         content: [{ type: 'text' as const, text: lines.join('\n') }],
         isError: !anyConnected,
       };
+      });
     },
   );
 }

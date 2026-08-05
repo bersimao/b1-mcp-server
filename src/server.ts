@@ -16,7 +16,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { loadConfig, Config } from './config/settings.js';
 import { AuditLogger } from './logging/auditLogger.js';
 import { DbAdapter, DirectDbModule } from './db/adapter.js';
-import { ServiceLayerAdapter, ServiceLayerModule } from './sl/serviceLayerAdapter.js';
+import { ServiceLayerAdapter } from './sl/serviceLayerAdapter.js';
 import { ConnectionManager } from './config/connectionManager.js';
 import { RateLimiter } from './rateLimit/rateLimiter.js';
 import { registerSqlTool } from './tools/executeSql.js';
@@ -24,23 +24,25 @@ import { registerSchemaTool } from './tools/schemaIntrospection.js';
 import { registerCheckConnectionTool } from './tools/checkConnection.js';
 import { registerConnectDatabaseTool } from './tools/connectDatabase.js';
 import { registerServiceLayerTool } from './tools/executeServiceLayer.js';
+import { OperationCoordinator } from './security/operationCoordinator.js';
+import { ServiceLayerTrustStore } from './security/serviceLayerTrustStore.js';
 
 /**
  * Creates, initialises, and returns the MCP server.
  *
  * @param directDb - The DirectDb export from sps-sap-interface.
- * @param serviceLayer - The ServiceLayer export from sps-sap-interface.
  */
 export async function createServer(
   directDb: DirectDbModule,
-  serviceLayer: ServiceLayerModule,
 ): Promise<McpServer> {
   const config = loadConfig();
   const logger = new AuditLogger(config);
 
   // Create adapters (both start unconnected)
   const adapter = new DbAdapter(directDb);
-  const slAdapter = new ServiceLayerAdapter(serviceLayer);
+  const slAdapter = new ServiceLayerAdapter();
+  const coordinator = new OperationCoordinator();
+  const slTrustStore = new ServiceLayerTrustStore(config.slTrustFile);
 
   // Load connection profiles
   const connectionManager = new ConnectionManager(config.connectionsFile || undefined);
@@ -58,11 +60,11 @@ export async function createServer(
   });
 
   // Register tools — all tools share the same adapters (single active connection)
-  registerConnectDatabaseTool(server, adapter, slAdapter, logger, config, connectionManager, rateLimiter);
-  registerSqlTool(server, adapter, logger, config, rateLimiter);
-  registerSchemaTool(server, adapter, logger, config, rateLimiter);
-  registerServiceLayerTool(server, slAdapter, adapter, logger, config, rateLimiter);
-  registerCheckConnectionTool(server, adapter, slAdapter, logger, config, rateLimiter);
+  registerConnectDatabaseTool(server, adapter, slAdapter, logger, config, connectionManager, rateLimiter, coordinator, slTrustStore);
+  registerSqlTool(server, adapter, logger, config, rateLimiter, coordinator);
+  registerSchemaTool(server, adapter, logger, config, rateLimiter, coordinator);
+  registerServiceLayerTool(server, slAdapter, adapter, logger, config, rateLimiter, coordinator);
+  registerCheckConnectionTool(server, adapter, slAdapter, logger, config, rateLimiter, coordinator);
 
   const profileCount = connectionManager.listAll().length;
   logger.debug(

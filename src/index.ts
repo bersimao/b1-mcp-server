@@ -31,18 +31,13 @@ import { createServer } from './server.js';
 // ---------------------------------------------------------------------------
 
 let DirectDb: any;
-let ServiceLayer: any;
 
 try {
   const spsModule: any = await import('sps-sap-interface');
   DirectDb = spsModule.DirectDb || spsModule.default?.DirectDb;
-  ServiceLayer = spsModule.ServiceLayer || spsModule.default?.ServiceLayer;
 
   if (!DirectDb) {
     throw new Error('DirectDb not found in sps-sap-interface exports');
-  }
-  if (!ServiceLayer) {
-    throw new Error('ServiceLayer not found in sps-sap-interface exports');
   }
 } catch (err) {
   console.error(
@@ -58,10 +53,11 @@ try {
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  const server = await createServer(DirectDb, ServiceLayer);
+  const server = await createServer(DirectDb);
   const transport = new StdioServerTransport();
 
   await server.connect(transport);
+  process.stdin.resume();
 
   console.error('[sps-mcp-server] Server running on stdio transport.');
   console.error('[sps-mcp-server] Tools: connect_database, execute_sql, execute_service_layer, get_schema_info, check_connection');

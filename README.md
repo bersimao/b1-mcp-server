@@ -61,7 +61,7 @@ Example `~/.claude/connections.json`:
     "dbName": "SBO_CLIENT_A",
     "dbUser": "B1ADMIN",
     "dbPassword": "•••",
-    "slUrl": "https://10.0.0.10:50000/b1s/v1",
+    "slUrl": "https://10.0.0.10:50000/b1s/v2",
     "slUser": "manager",
     "slPassword": "•••"
   },
@@ -79,13 +79,43 @@ Example `~/.claude/connections.json`:
 Service Layer fields (`slUrl`, `slUser`, `slPassword`) are optional — DirectDb
 can be configured alone.
 
+Both SAP Service Layer roots are supported: `/b1s/v1` for OData v3 and
+`/b1s/v2` for OData v4. Login, health checks and relative GET/PATCH requests
+use the exact root configured by the profile. Request validation is
+version-neutral; callers pass only the relative endpoint (for example,
+`Items?$select=ItemCode&$top=1`). OData query and payload differences remain
+the caller's responsibility. SAP recommends v2 for current installations.
+
 ## Security model
 
-**The AI never sees credentials.** They are read from
+**MCP tool responses never expose credentials.** They are read from
 `~/.claude/connections.json` inside the server process, passed directly into
-the underlying `sps-sap-interface` adapters, and are never interpolated into
-any tool response, audit log entry, or error message. Adapters do not retain
-the password after init.
+the connection adapters, and are never interpolated into any tool response,
+audit log entry, or error message. The Service Layer adapter retains only the
+session cookie after login, not the username or password. This protocol-level
+protection does not stop an AI host that has unrestricted same-user shell or
+filesystem access from opening the file directly; see the hook guidance below.
+
+Service Layer connections require HTTPS with normal certificate validation by
+default. For an internal certificate authority, set `NODE_EXTRA_CA_CERTS` to
+the CA bundle before starting the MCP process.
+
+For a legacy SAP installation whose certificate cannot be renewed, the first
+`connect_database` call inspects TLS without sending credentials and requests
+explicit approval through MCP form elicitation. An accepted certificate is
+stored by canonical `https://host:port` origin in
+`~/.claude/service-layer-trust.json` (mode `0600`), so profiles sharing one SL
+endpoint share one pin. The file is created only after the first approval and
+contains no credentials. A changed certificate requires approval again;
+clients without elicitation support fail closed. Legacy manual profile pin
+fields remain accepted only for one-time migration into this local store.
+
+Profiles reload on every `connect_database` call. A DB-only profile can gain
+`slUrl`, `slUser` and `slPassword` while its DB connection is active; the next
+call keeps that DB connection and initializes only Service Layer.
+
+Global certificate verification disablement is never supported: the adapter
+refuses to connect when `NODE_TLS_REJECT_UNAUTHORIZED=0` is present.
 
 What the AI does see when it calls `connect_database` with `"list"`:
 
@@ -100,8 +130,34 @@ Recommendations for your `connections.json`:
   - Linux/macOS: `chmod 600 ~/.claude/connections.json`.
   - Windows: `icacls "%USERPROFILE%\.claude\connections.json" /inheritance:r /grant:r "%USERNAME%:F"`.
 - Do not commit it to any git repository or share it via cloud sync.
+- On POSIX systems, the server fails closed and refuses to load a profile file
+  that grants any permission to group or other users.
 - Each user maintains their own copy. Credentials never come from this npm
   package.
+
+### Claude Code hook and sandbox guidance
+
+Use a centrally managed Claude Code `PreToolUse` hook or equivalent host policy
+to deny AI-issued access to the canonical resolved path of
+`connections.json`. Cover every filesystem-capable tool (`Read`, `Grep`,
+`Glob`, edit/write tools and filesystem MCP servers), not only literal filename
+matches. Shell commands are the difficult case: matching the path text is not
+sufficient because commands, working directories and symlinks can access it
+indirectly. Prefer a host filesystem sandbox that denies the credential path;
+otherwise require approval for shell access outside the workspace.
+
+The hook/policy must live outside AI-writable project and user settings. For
+Claude Code enterprise deployments, install it in the platform's managed
+settings so project instructions cannot override it. Deny AI writes to
+`service-layer-trust.json` as well; reading that file is not secret, but its
+integrity controls which legacy certificate is trusted.
+
+Hooks are defense in depth, not an OS security boundary. They govern tool calls
+issued through the AI host; they cannot stop this MCP process, another local
+process, or a malicious npm package running as the same OS user from reading a
+mode-`0600` file. Strong isolation requires a dedicated OS identity, sandbox,
+or remotely hosted credential broker. See the
+[Claude Code hooks and managed-settings guidance](https://docs.anthropic.com/en/docs/claude-code/iam).
 
 ## Configuration (env vars)
 
@@ -116,6 +172,11 @@ All optional.
 | `MCP_RATE_LIMIT_MAX_CALLS` | `60` | Max calls per tool per window |
 | `MCP_RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit window |
 | `MCP_QUERY_TIMEOUT_MS` | `60000` | Statement ceiling. A query still running at this point is aborted. Raise it if a legitimate report needs longer |
+| `MCP_SL_TIMEOUT_MS` | `30000` | Service Layer login/request timeout |
+| `MCP_SL_TRUST_FILE` | `~/.claude/service-layer-trust.json` | Local non-secret certificate trust store |
+| `MCP_SL_MAX_URL_LENGTH` | `2048` | Maximum relative OData URL length |
+| `MCP_SL_MAX_BODY_CHARS` | `50000` | Maximum serialised PATCH body length |
+| `MCP_SL_PATCH_ENABLED` | `true` | Emergency PATCH kill switch; set to `false` to disable writes |
 | `MCP_MAX_RESULT_ROWS` | `500` | Max rows returned to the model; extra rows are cut and announced |
 | `MCP_MAX_RESULT_CHARS` | `100000` | Max characters of result JSON, applied after the row cap |
 | `MCP_DRY_RUN` | `false` | If `true`, validate but don't execute |
@@ -141,9 +202,12 @@ Also blocked: multi-statement queries (semicolons outside `BEGIN..END`),
 unterminated quotes or brackets, `OPENQUERY` / `OPENROWSET` / `OPENDATASOURCE`,
 and `SELECT ... INTO <table>`.
 
-Service Layer requests allow `GET` and `PATCH` only. `POST` / `PUT` / `DELETE`
-are blocked — note that `PATCH` **is** a write, and is the one write path the
-server permits.
+Service Layer requests allow `GET` and guarded `PATCH` only. `POST` / `PUT` /
+`DELETE` are blocked. PATCH requires one directly keyed entity endpoint and an
+explicit user acceptance through MCP form elicitation. The approval screen is
+bound to the database, endpoint, exact body, field list and SHA-256 body hash.
+A client without elicitation support cannot PATCH. `MCP_DRY_RUN=true` never
+executes PATCH, and `MCP_SL_PATCH_ENABLED=false` disables it globally.
 
 The per-table classification model (SAP_CORE / SAP_USER / CUSTOM / TEMP with
 per-operation rules) still exists in `src/guardrails/rules/` and is fully

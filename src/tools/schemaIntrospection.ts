@@ -10,6 +10,7 @@ import { Config } from '../config/settings.js';
 import { OperationType, DbType } from '../types/index.js';
 import { RateLimiter } from '../rateLimit/rateLimiter.js';
 import { formatResult } from './formatResult.js';
+import { OperationCoordinator } from '../security/operationCoordinator.js';
 
 interface SchemaQuery {
   query: string;
@@ -55,7 +56,8 @@ export function buildSchemaQuery(objectType: string, filter: string | undefined,
 }
 
 export function registerSchemaTool(
-  server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config, rateLimiter: RateLimiter,
+  server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config,
+  rateLimiter: RateLimiter, coordinator: OperationCoordinator,
 ): void {
   const dbName = () => adapter.getDbName() || '(not connected)';
   const dbType = () => adapter.getDbType();
@@ -77,6 +79,8 @@ IMPORTANT: Before calling this tool, you MUST confirm which database the user in
         return { content: [{ type: 'text' as const, text: `Rate limit exceeded for get_schema_info. Try again in ${Math.ceil(rateCheck.retryAfterMs / 1000)}s.` }], isError: true };
       }
 
+      return coordinator.runExclusive(async () => {
+
       const { query, params } = buildSchemaQuery(objectType, filter, dbType());
 
       logger.log(logger.createEntry({ tool: 'get_schema_info', database: dbName(), dbType: dbType(), operation: OperationType.SELECT, tables: [], query, decision: 'ALLOW', reason: `Schema introspection: ${objectType}${params.length ? ` filter=${JSON.stringify(params[0])}` : ''}`, rule: 'schemaIntrospection' }));
@@ -88,6 +92,7 @@ IMPORTANT: Before calling this tool, you MUST confirm which database the user in
         const errorMsg = err instanceof Error ? err.message : String(err);
         return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Schema query failed: ${errorMsg}` }], isError: true };
       }
+      });
     },
   );
 }

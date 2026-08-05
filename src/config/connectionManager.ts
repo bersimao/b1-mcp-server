@@ -14,18 +14,28 @@
 //       "dbName": "SBO_DATABASE",
 //       "dbUser": "user",
 //       "dbPassword": "password",
-//       "slUrl": "https://server:50000/b1s/v1",   // optional
+//       "slUrl": "https://server:50000/b1s/v2",   // optional; v1 and v2 supported
 //       "slUser": "manager",                       // optional
-//       "slPassword": "password"                   // optional
+//       "slPassword": "password",                  // optional
+//       "slTlsMode": "pinned",                     // legacy migration only
+//       "slTlsServerName": "sap.example.com",      // legacy migration only
+//       "slCertificateSha256": "AA:BB:..."          // legacy migration only
 //     }
 //   ]
 //
 // ============================================================================
 
-import { readFileSync } from 'fs';
+import { readFileSync, statSync } from 'fs';
 import { resolve } from 'path';
 import { homedir } from 'os';
 import { DbType } from '../types/index.js';
+
+function parseSlTlsMode(value: unknown): 'strict' | 'pinned' | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  const mode = String(value).trim().toLowerCase();
+  if (mode === 'strict' || mode === 'pinned') return mode;
+  throw new Error(`Invalid slTlsMode "${mode}". Expected "strict" or "pinned".`);
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,12 +48,18 @@ export interface ConnectionProfile {
   dbName: string;
   dbUser: string;
   dbPassword: string;
-  /** Service Layer base URL (e.g. "https://server:50000/b1s/v1"). Optional. */
+  /** Service Layer base URL (e.g. "https://server:50000/b1s/v1" or "/b1s/v2"). Optional. */
   slUrl?: string;
   /** Service Layer login user. Optional. */
   slUser?: string;
   /** Service Layer login password. Optional. */
   slPassword?: string;
+  /** TLS validation mode. Standard CA/hostname verification is the default. */
+  slTlsMode?: 'strict' | 'pinned';
+  /** Certificate DNS identity/SNI name, mainly for IP-based pinned URLs. */
+  slTlsServerName?: string;
+  /** Exact peer-certificate SHA-256 fingerprint required by pinned mode. */
+  slCertificateSha256?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +81,15 @@ export class ConnectionManager {
    */
   load(): void {
     try {
+      if (process.platform !== 'win32') {
+        const mode = statSync(this.filePath).mode & 0o777;
+        if ((mode & 0o077) !== 0) {
+          throw new Error(
+            `Refusing to load credentials from ${this.filePath}: permissions are ${mode.toString(8)}, expected 600. ` +
+            `Run: chmod 600 ${this.filePath}`,
+          );
+        }
+      }
       const raw = readFileSync(this.filePath, 'utf-8');
       const parsed = JSON.parse(raw);
 
@@ -87,6 +112,9 @@ export class ConnectionManager {
           slUrl: p.slUrl ? String(p.slUrl).trim() : undefined,
           slUser: p.slUser ? String(p.slUser).trim() : undefined,
           slPassword: p.slPassword ? String(p.slPassword).trim() : undefined,
+          slTlsMode: parseSlTlsMode(p.slTlsMode),
+          slTlsServerName: p.slTlsServerName ? String(p.slTlsServerName).trim() : undefined,
+          slCertificateSha256: p.slCertificateSha256 ? String(p.slCertificateSha256).trim() : undefined,
         }));
 
       this.loaded = true;

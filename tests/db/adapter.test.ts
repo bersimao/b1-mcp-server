@@ -75,4 +75,32 @@ describe('DbAdapter.init timeout pass-through', () => {
     expect(logged).not.toContain(profile.password);
     vi.restoreAllMocks();
   });
+
+  it('closes the underlying pool when disconnecting', async () => {
+    const { module } = fakeDirectDb();
+    const close = vi.spyOn(module, 'close');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const adapter = new DbAdapter(module);
+    await adapter.init({ ...profile, dbType: 'hana' });
+
+    await adapter.disconnect();
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(adapter.isConnected()).toBe(false);
+    vi.restoreAllMocks();
+  });
+
+  it('closes an existing pool before reinitialising', async () => {
+    const { module } = fakeDirectDb();
+    const close = vi.spyOn(module, 'close');
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const adapter = new DbAdapter(module);
+    await adapter.init({ ...profile, dbType: 'hana' });
+
+    await adapter.init({ ...profile, database: 'SBO_OTHER', dbType: 'hana' });
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(adapter.getDbName()).toBe('SBO_OTHER');
+    vi.restoreAllMocks();
+  });
 });

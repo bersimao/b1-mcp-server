@@ -20,6 +20,7 @@ import { Config } from '../../src/config/settings.js';
 import { RateLimiter } from '../../src/rateLimit/rateLimiter.js';
 import { registerSqlTool } from '../../src/tools/executeSql.js';
 import { registerSchemaTool } from '../../src/tools/schemaIntrospection.js';
+import { OperationCoordinator } from '../../src/security/operationCoordinator.js';
 
 // ---------------------------------------------------------------------------
 // Mock DirectDb
@@ -41,6 +42,14 @@ function createTestConfig(overrides: Partial<Config> = {}): Config {
     logLevel: 'error',
     rateLimitMaxCalls: 1000,
     rateLimitWindowMs: 60000,
+    queryTimeoutMs: 60000,
+    slTimeoutMs: 30000,
+    slTrustFile: '',
+    slMaxUrlLength: 2048,
+    slMaxBodyChars: 50000,
+    slPatchEnabled: true,
+    maxResultRows: 500,
+    maxResultChars: 100000,
     dryRun: false,
     ...overrides,
   };
@@ -61,6 +70,7 @@ function captureToolHandlers(
   const logger = new AuditLogger(config);
   const adapter = new DbAdapter(mockDirectDb);
   const rateLimiter = new RateLimiter({ maxCalls: config.rateLimitMaxCalls, windowMs: config.rateLimitWindowMs });
+  const coordinator = new OperationCoordinator();
 
   const fakeServer = {
     tool: (name: string, _desc: string, _schema: any, handler: ToolHandler) => {
@@ -73,8 +83,8 @@ function captureToolHandlers(
   (adapter as any).dbType = 'hana';
   (adapter as any).initialised = true;
 
-  registerSqlTool(fakeServer, adapter, logger, config, rateLimiter);
-  registerSchemaTool(fakeServer, adapter, logger, config, rateLimiter);
+  registerSqlTool(fakeServer, adapter, logger, config, rateLimiter, coordinator);
+  registerSchemaTool(fakeServer, adapter, logger, config, rateLimiter, coordinator);
 
   return { handlers, adapter, mockDirectDb };
 }

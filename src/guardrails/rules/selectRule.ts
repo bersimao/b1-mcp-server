@@ -69,9 +69,26 @@ const FORBIDDEN_IN_READ_RE =
  */
 const LOCK_HINT_RE = /\b(UPDLOCK|XLOCK|TABLOCKX|TABLOCK|HOLDLOCK|SERIALIZABLE|REPEATABLEREAD)\b/i;
 
+/**
+ * Sequence reads are state-changing operations. Both HANA's sequence.NEXTVAL
+ * and SQL Server's NEXT VALUE FOR consume values even though they appear in a
+ * SELECT, and the change is not reliably rolled back.
+ */
+const SEQUENCE_ADVANCE_RE = /(?:\.\s*NEXTVAL\b|\bNEXT\s+VALUE\s+FOR\b)/i;
+
 export function evaluateSelect(parsed: ParsedQuery): GuardrailResult {
   // Neutralise comments and quoted spans so neither check can be evaded.
   const scan = blankQuotedSpans(stripComments(parsed.rawSql));
+
+  if (SEQUENCE_ADVANCE_RE.test(scan)) {
+    return {
+      allowed: false,
+      reason:
+        'Sequence advancement is not permitted in read-only mode. NEXTVAL / NEXT VALUE FOR ' +
+        'changes persistent sequence state even when used inside SELECT.',
+      rule: 'sequenceAdvanceBlock',
+    };
+  }
 
   const passThrough = PASS_THROUGH_RE.exec(scan);
   if (passThrough) {

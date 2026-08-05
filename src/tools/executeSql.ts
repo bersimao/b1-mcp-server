@@ -16,9 +16,11 @@ import { AuditLogger } from '../logging/auditLogger.js';
 import { Config } from '../config/settings.js';
 import { OperationType } from '../types/index.js';
 import { RateLimiter } from '../rateLimit/rateLimiter.js';
+import { OperationCoordinator } from '../security/operationCoordinator.js';
 
 export function registerSqlTool(
-  server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config, rateLimiter: RateLimiter,
+  server: McpServer, adapter: DbAdapter, logger: AuditLogger, config: Config,
+  rateLimiter: RateLimiter, coordinator: OperationCoordinator,
 ): void {
   // Dynamic getters - values change when the active database connection switches
   const dbName = () => adapter.getDbName() || '(not connected)';
@@ -47,6 +49,8 @@ Rules enforced server-side:
       if (!rateCheck.allowed) {
         return { content: [{ type: 'text' as const, text: `Rate limit exceeded for execute_sql. Try again in ${Math.ceil(rateCheck.retryAfterMs / 1000)}s.` }], isError: true };
       }
+
+      return coordinator.runExclusive(async () => {
 
       // Input validation (null bytes, length, etc.)
       const inputCheck = validateInput(query, config.maxQueryLength);
@@ -87,6 +91,7 @@ Rules enforced server-side:
         logger.log(auditEntry);
         return { content: [{ type: 'text' as const, text: `[DB: ${dbName()}] Execution failed: ${errorMsg}` }], isError: true };
       }
+      });
     },
   );
 }

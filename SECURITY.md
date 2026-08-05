@@ -18,7 +18,7 @@ The DirectDb/SQL path executes **only** `SELECT`, plus anonymous blocks whose st
 
 Writes are the human's job: the AI produces the SQL and a person runs it in a real DB client (HANA Studio / DBeaver / hdbsql), where `COMMIT` is guaranteed. This is deliberate — the shared `DirectDb` pool does not guarantee a commit and can leave orphaned, lock-holding transactions.
 
-The Service Layer path allows `GET` and `PATCH`. `PATCH` is permitted because the Service Layer validates and commits atomically; `POST`, `PUT` and `DELETE` are blocked server-side.
+The Service Layer path allows `GET` and guarded `PATCH`. PATCH is permitted only for one directly keyed entity after the client presents the exact database, endpoint, fields, body and body hash to the user and receives explicit acceptance through MCP form elicitation. Clients without elicitation support fail closed. `POST`, `PUT` and `DELETE` are blocked server-side.
 
 ## Tools
 
@@ -26,7 +26,7 @@ The Service Layer path allows `GET` and `PATCH`. `PATCH` is permitted because th
 |---|---|---|
 | `connect_database` | Switch active DB + Service Layer profile | Low — credentials never leave the process |
 | `execute_sql` | `SELECT` only (incl. read-only anonymous blocks) | Low |
-| `execute_service_layer` | OData `GET` / `PATCH` | **Medium — PATCH is a real write** |
+| `execute_service_layer` | OData `GET` / human-approved keyed `PATCH` | **Medium — PATCH remains a real write** |
 | `get_schema_info` | Catalog metadata | Low |
 | `check_connection` | Health pings | None |
 
@@ -85,13 +85,31 @@ On the live read-only server this classification feeds the audit log; the per-op
 | DELETE | block | confirm | allow | allow |
 | DROP | block | block | only inside `BEGIN..END` | only inside `BEGIN..END` |
 
-### Layer 8 — Rate limiting
+### Layer 8 — Connection and operation serialization
+
+Connection switching and every DB/Service Layer operation share one coordinator. Only one client-database operation runs at a time. PATCH captures its target before approval and re-checks it immediately before execution; a profile change cancels the write. DirectDb pools are closed before reinitialization.
+
+### Layer 9 — Service Layer write controls
+
+- HTTPS only. Standard profiles use CA, validity and hostname verification; internal CAs use `NODE_EXTRA_CA_CERTS`.
+- Legacy endpoints use credential-free certificate inspection followed by explicit MCP form elicitation. Accepted pins are stored locally by canonical origin in an owner-only, non-secret trust file. A matching pin is checked before login credentials can leave the process; a changed certificate requires approval again, and clients without elicitation fail closed. Manually configured profile pins are supported only for one-time migration.
+- The adapter always refuses `NODE_TLS_REJECT_UNAUTHORIZED=0`; there is no global insecure-TLS mode.
+- Relative canonical paths only; no traversal, Login/Logout or `$batch`.
+- Relative-path validation is version-neutral; the adapter preserves the profile's `/b1s/v1` or `/b1s/v2` root exactly.
+- PATCH must target one directly keyed entity with no navigation or query options.
+- Explicit user form elicitation bound to target, exact body and SHA-256 hash.
+- Fail-closed when elicitation is unavailable, declined or cancelled.
+- Emergency `MCP_SL_PATCH_ENABLED=false` kill switch.
+- Dry-run validates and previews but never writes.
+- Bounded URL, body, response and request time.
+
+### Layer 10 — Rate limiting
 
 A sliding-window limiter per tool prevents AI runaway loops. Configurable via `MCP_RATE_LIMIT_MAX_CALLS` (default 60) and `MCP_RATE_LIMIT_WINDOW_MS` (default 60 s).
 
-### Layer 9 — Audit logging
+### Layer 11 — Audit logging
 
-Every operation is logged **before** execution, including denied ones, as JSON Lines to stderr and (optionally) a file. Each entry records timestamp, tool, database, operation type, tables, table types, decision, reason, rule, the query, duration and any error.
+Every operation is logged before execution, including denied ones. PATCH audit records the endpoint, field names and exact-body SHA-256 hash without recording field values or session cookies. Approval, completion and failure are logged separately.
 
 Logs never go to stdout — the MCP stdio transport uses stdout for JSON-RPC.
 
@@ -101,30 +119,37 @@ Logs never go to stdout — the MCP stdio transport uses stdout for JSON-RPC.
 - **`EXEC` / `EXECUTE` / `CALL`** — stored procedures cannot be run through this server
 - **`INSERT` / `UPDATE` / `DELETE` / `DROP`** — read-only posture, no bypass
 - **Multi-statement queries** — semicolons outside `BEGIN...END`
+- **Sequence advancement** — HANA `NEXTVAL` and SQL Server `NEXT VALUE FOR`
 - **Unterminated quotes or brackets** — unanalysable
 - **`OPENQUERY` / `OPENROWSET` / `OPENDATASOURCE`** and **`SELECT ... INTO <table>`**
 
 ## Connection security
 
-- Credentials live only in `~/.claude/connections.json`, are read inside the server process, and are passed straight to the `sps-sap-interface` adapters. There is **no env-var credential fallback**.
-- The AI never sees a password. A profile listing exposes only `id`, `dbName`, `dbType`, `slUrl` and a capability flag. Nothing is interpolated into tool responses, audit entries or error messages, and adapters do not retain the password after init.
+- Credentials live only in `~/.claude/connections.json`; there is **no env-var credential fallback**.
+- The AI never sees a password. The local Service Layer adapter discards username/password after verified-HTTPS login and retains only the session cookie.
 - The server starts **unconnected**. The AI selects a profile by name via `connect_database`; it cannot supply a host, database or credential of its own.
-- Switching environments **always disconnects both** the DB and the Service Layer first, so a session can never have DB on one environment and SL on another.
+- Switching is serialized with every operation, disconnects both sides, and closes the old DirectDb pool before initialization.
 - Failed logins are tracked per profile and side, with a warning after 3 consecutive failures — SAP B1 locks accounts after repeated failures.
 - Protect the profile file: `chmod 600 ~/.claude/connections.json` (Linux/macOS) or the `icacls` equivalent on Windows. It is the real trust boundary — see below.
+- On POSIX systems, startup/reload fails closed when the profile mode grants any group/other permission. Audit files are created and maintained as `0600`.
+- For Claude Code, deploy a managed `PreToolUse` deny policy and filesystem sandbox for the canonical `connections.json` path. Cover read/search/edit/filesystem MCP tools and restrict shell access; a literal path-matching hook alone is bypass-prone through indirect filesystem access.
+- Deny AI-issued writes to `service-layer-trust.json`. Its contents are public certificate metadata, but changing a pin changes endpoint trust.
+- Hooks protect the AI-tool boundary only. They do not prevent the MCP runtime or another same-user process from reading a `0600` owner-readable file. Put credentials behind a separate OS identity or remote broker when that stronger boundary is required.
 
 ## Dry-run mode
 
-`MCP_DRY_RUN=true` validates queries through every guardrail without executing them. Useful for testing the security model against a new environment.
+`MCP_DRY_RUN=true` validates SQL and Service Layer PATCH without executing them. Useful for testing the security model against a new environment.
 
 ## Known limitations
 
 Stated explicitly, because a security document that omits them is worse than none:
 
 1. **No authentication at the MCP layer.** Anything that can speak stdio to this process can list profiles and connect to any of them, production included. That is inherent to local stdio MCP: the OS user account and the permissions on `connections.json` are the actual boundary.
-2. **Service Layer `PATCH` is an unrestricted write.** Any entity, any field the SL user may change, with a free-text OData URL. There is no entity allow-list. Combined with the prompt-injection surface above, this is the most significant remaining exposure.
-3. **`get_schema_info` does not pass through the guardrail engine.** It is the one SQL path with no net under it. The queries are fixed catalog SELECTs and the caller's `filter` is bound as a `?` parameter, never interpolated (`tests/tools/schemaIntrospection.test.ts` fails if that changes), so it carries no injection surface of its own — but it is still SQL that no rule inspects.
-4. **Read-only is not the same as harmless.** Partly addressed: lock-taking table hints (`UPDLOCK`, `XLOCK`, `TABLOCK`, `TABLOCKX`, `HOLDLOCK`, `SERIALIZABLE`, `REPEATABLEREAD`) are now denied — they would hold locks on a pool that never commits, blocking real B1 users. `NOLOCK`, `READPAST`, `ROWLOCK` and `PAGLOCK` stay allowed: they take no locks and add no duration. HANA's `SELECT ... FOR UPDATE` is caught by the write-keyword fail-safe. Results are capped at `MCP_MAX_RESULT_ROWS` rows then `MCP_MAX_RESULT_CHARS` characters, with truncation always announced. Query cost is bounded by `MCP_QUERY_TIMEOUT_MS` (default 60 s), handed to `DirectDb.init()`: HANA maps it to `communicationTimeout`, MS SQL to `connectionTimeout` + `requestTimeout`. This is the only limit that stops the *work* rather than the *output* — the row cap applies after the database has already computed the result.
+2. **Same-user AI shell access defeats file secrecy.** The server never emits credentials through MCP, but it cannot stop an AI host with unrestricted shell/filesystem tools from opening an owner-readable `connections.json`. Managed hooks and sandbox denies reduce this risk but are not equivalent to a separate OS identity.
+3. **Service Layer `PATCH` remains a powerful write after approval.** Entity fields are not allow-listed by design. The boundary is explicit human approval of the exact target/body plus SAP Business One authorization for the configured account. A careless approval can still damage business data; set `MCP_SL_PATCH_ENABLED=false` if this residual risk is unacceptable.
+4. **Pinned TLS accepts an expired or self-signed certificate by exact fingerprint.** This preserves encryption and resists an unpinned intermediary, but first approval is trust-on-first-use and cannot prove that an intermediary was absent. It also cannot provide the lifecycle assurance of a valid CA-issued certificate. If the certificate's private key is compromised, the pin no longer protects the connection. Prefer certificate renewal whenever possible.
+5. **`get_schema_info` does not pass through the guardrail engine.** It is the one SQL path with no net under it. The queries are fixed catalog SELECTs and the caller's `filter` is bound as a `?` parameter, never interpolated (`tests/tools/schemaIntrospection.test.ts` fails if that changes), so it carries no injection surface of its own — but it is still SQL that no rule inspects.
+6. **Read-only is not the same as harmless.** Partly addressed: lock-taking table hints (`UPDLOCK`, `XLOCK`, `TABLOCK`, `TABLOCKX`, `HOLDLOCK`, `SERIALIZABLE`, `REPEATABLEREAD`) are now denied — they would hold locks on a pool that never commits, blocking real B1 users. `NOLOCK`, `READPAST`, `ROWLOCK` and `PAGLOCK` stay allowed: they take no locks and add no duration. HANA's `SELECT ... FOR UPDATE` is caught by the write-keyword fail-safe. Results are capped at `MCP_MAX_RESULT_ROWS` rows then `MCP_MAX_RESULT_CHARS` characters, with truncation always announced. Query cost is bounded by `MCP_QUERY_TIMEOUT_MS` (default 60 s), handed to `DirectDb.init()`: HANA maps it to `communicationTimeout`, MS SQL to `connectionTimeout` + `requestTimeout`. This is the only limit that stops the *work* rather than the *output* — the row cap applies after the database has already computed the result.
 
 Both engines were measured against real servers, with a CPU-only query calibrated to outlast the ceiling. In each case the statement was confirmed gone from the engine's own running-request view well before its work would have finished — so it is genuinely killed, not merely abandoned by the client:
 
@@ -140,7 +165,7 @@ Both engines were measured against real servers, with a CPU-only query calibrate
 The HANA error text is the trap: an aborted query reports a dead connection, with no hint that a timeout caused it. MS SQL says plainly what happened.
 
 **Still open:** the ceiling is wall-clock, not cost. A cartesian product still gets the full 60 s of production CPU before it is cut; a true cost governor (`QUERY_GOVERNOR_COST_LIMIT`, HANA workload classes) would reject it on the optimiser's estimate, before execution.
-5. **The parser is not a full SQL parser.** It is a deliberately small classifier that denies by default. Its correctness rests on the quote/comment scanners; any change there must keep `tests/guardrails/quotedSpanEvasion.test.ts` green.
+7. **The parser is not a full SQL parser.** It is a deliberately small classifier that denies by default. Its correctness rests on the quote/comment scanners; any change there must keep `tests/guardrails/quotedSpanEvasion.test.ts` green.
 
 ## Reporting vulnerabilities
 

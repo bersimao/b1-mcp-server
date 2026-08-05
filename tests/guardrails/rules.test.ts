@@ -33,6 +33,18 @@ describe('SELECT rule', () => {
     );
     expect(r.allowed).toBe(true);
   });
+
+  it('blocks SQL Server NEXT VALUE FOR because it advances persistent sequence state', () => {
+    const r = validate('SELECT NEXT VALUE FOR dbo.OrderSequence AS NextId');
+    expect(r.allowed).toBe(false);
+    expect(r.rule).toBe('sequenceAdvanceBlock');
+  });
+
+  it('blocks HANA NEXTVAL because it advances persistent sequence state', () => {
+    const r = validate('SELECT "OrderSequence".NEXTVAL FROM DUMMY');
+    expect(r.allowed).toBe(false);
+    expect(r.rule).toBe('sequenceAdvanceBlock');
+  });
 });
 
 // ---------------------------------------------------------------------------

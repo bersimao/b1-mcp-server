@@ -97,14 +97,24 @@ export class DbAdapter {
   }): Promise<void> {
     const databaseType = config.dbType === 'hana' ? 'HANA' : 'SQL';
 
-    await this.directDb.init({
-      server: config.server,
-      database: config.database,
-      databaseType,
-      username: config.username,
-      password: config.password,
-      timeout: config.timeoutMs,
-    });
+    if (this.initialised) {
+      await this.disconnect();
+    }
+
+    try {
+      await this.directDb.init({
+        server: config.server,
+        database: config.database,
+        databaseType,
+        username: config.username,
+        password: config.password,
+        timeout: config.timeoutMs,
+      });
+    } catch (err) {
+      // DirectDb may allocate a partial pool before init rejects.
+      try { await this.directDb.close(); } catch { /* preserve the original connection error */ }
+      throw err;
+    }
 
     this.dbName = config.database;
     this.dbType = config.dbType;
@@ -122,10 +132,14 @@ export class DbAdapter {
    * After calling this, isConnected() returns false and all operations will fail
    * until init() is called again.
    */
-  disconnect(): void {
+  async disconnect(): Promise<void> {
+    const shouldClose = this.initialised;
     this.initialised = false;
     this.dbName = '';
     this.dbType = 'hana';
+    if (shouldClose) {
+      await this.directDb.close();
+    }
     console.error('[adapter] Disconnected from database.');
   }
 

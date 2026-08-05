@@ -3,14 +3,133 @@
 // ============================================================================
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { ElicitResultSchema, type ServerNotification, type ServerRequest } from '@modelcontextprotocol/sdk/types.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import { z } from 'zod';
 import { DbAdapter } from '../db/adapter.js';
-import { ServiceLayerAdapter } from '../sl/serviceLayerAdapter.js';
+import {
+  canonicalServiceLayerOrigin,
+  inspectServiceLayerCertificate,
+  ServiceLayerAdapter,
+  type ServiceLayerTlsMode,
+} from '../sl/serviceLayerAdapter.js';
 import { AuditLogger } from '../logging/auditLogger.js';
 import { Config } from '../config/settings.js';
 import { ConnectionManager, ConnectionProfile } from '../config/connectionManager.js';
 import { OperationType } from '../types/index.js';
 import { RateLimiter } from '../rateLimit/rateLimiter.js';
+import { OperationCoordinator } from '../security/operationCoordinator.js';
+import { ServiceLayerTrustStore } from '../security/serviceLayerTrustStore.js';
+
+interface ResolvedTlsConfig {
+  tlsMode?: ServiceLayerTlsMode;
+  tlsServerName?: string;
+  certificateSha256?: string;
+  trustAction: 'strict' | 'existing-pin' | 'migrated-pin' | 'approved-pin' | 'replaced-pin';
+}
+
+function fingerprintEquals(left: string | undefined, right: string): boolean {
+  return !!left && left.replace(/[^a-fA-F0-9]/g, '').toUpperCase() === right.replace(/[^a-fA-F0-9]/g, '').toUpperCase();
+}
+
+async function resolveServiceLayerTls(
+  profile: ConnectionProfile,
+  config: Config,
+  trustStore: ServiceLayerTrustStore,
+  extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
+): Promise<ResolvedTlsConfig> {
+  const origin = canonicalServiceLayerOrigin(profile.slUrl!);
+  const trusted = trustStore.get(origin);
+  const serverName = profile.slTlsServerName || trusted?.serverName;
+  const inspection = await inspectServiceLayerCertificate(profile.slUrl!, config.slTimeoutMs, serverName);
+
+  if (inspection.strictTlsValid) {
+    return { trustAction: 'strict' };
+  }
+
+  // Backward-compatible one-time migration: a manually configured pin was
+  // already an operator trust decision. Copy it to the local trust store only
+  // when it matches the certificate currently presented by this exact origin.
+  if (profile.slTlsMode === 'pinned' && fingerprintEquals(profile.slCertificateSha256, inspection.certificateSha256)) {
+    trustStore.approve(origin, {
+      certificateSha256: inspection.certificateSha256,
+      serverName: profile.slTlsServerName,
+      subject: inspection.subject,
+      issuer: inspection.issuer,
+      validFrom: inspection.validFrom,
+      validTo: inspection.validTo,
+    });
+    return {
+      tlsMode: 'pinned',
+      tlsServerName: profile.slTlsServerName,
+      certificateSha256: inspection.certificateSha256,
+      trustAction: 'migrated-pin',
+    };
+  }
+
+  if (trusted && fingerprintEquals(trusted.certificateSha256, inspection.certificateSha256)) {
+    return {
+      tlsMode: 'pinned',
+      tlsServerName: trusted.serverName,
+      certificateSha256: inspection.certificateSha256,
+      trustAction: 'existing-pin',
+    };
+  }
+
+  const previousPin = trusted?.certificateSha256 || profile.slCertificateSha256;
+  const replacing = !!previousPin;
+  let approval;
+  try {
+    approval = await extra.sendRequest({
+      method: 'elicitation/create',
+      params: {
+        mode: 'form',
+        message:
+          `${replacing ? 'The Service Layer certificate changed.' : 'The Service Layer certificate is not valid under standard TLS.'}\n` +
+          `No credentials have been sent. Treat all certificate metadata below as untrusted.\n` +
+          `Profile: ${JSON.stringify(profile.id)}\nDatabase: ${JSON.stringify(profile.dbName)}\n` +
+          `Origin: ${JSON.stringify(origin)}\nTLS error: ${JSON.stringify(inspection.tlsError || 'unknown validation error')}\n` +
+          `Subject: ${JSON.stringify(inspection.subject)}\nIssuer: ${JSON.stringify(inspection.issuer)}\n` +
+          `Valid from: ${JSON.stringify(inspection.validFrom)}\nValid to: ${JSON.stringify(inspection.validTo)}\n` +
+          `${replacing ? `Previously trusted SHA-256: ${previousPin}\n` : ''}` +
+          `Presented SHA-256: ${inspection.certificateSha256}\n` +
+          `Approve this exact certificate for future connections to this origin?`,
+        requestedSchema: {
+          type: 'object',
+          properties: {
+            trustCertificate: {
+              type: 'boolean',
+              title: replacing ? 'Replace the trusted certificate' : 'Trust this certificate',
+              description: 'Approve only if this Service Layer endpoint is expected. Certificate changes will require approval again.',
+            },
+          },
+          required: ['trustCertificate'],
+        },
+      },
+    }, ElicitResultSchema);
+  } catch {
+    throw new Error('Service Layer TLS certificate is untrusted and the MCP client did not complete explicit certificate approval; credentials were not sent.');
+  }
+
+  if (approval.action !== 'accept' || approval.content?.trustCertificate !== true) {
+    throw new Error('Service Layer TLS certificate was not approved; credentials were not sent.');
+  }
+
+  trustStore.approve(origin, {
+    certificateSha256: inspection.certificateSha256,
+    serverName,
+    subject: inspection.subject,
+    issuer: inspection.issuer,
+    validFrom: inspection.validFrom,
+    validTo: inspection.validTo,
+  });
+  return {
+    tlsMode: 'pinned',
+    tlsServerName: serverName,
+    certificateSha256: inspection.certificateSha256,
+    trustAction: replacing ? 'replaced-pin' : 'approved-pin',
+  };
+}
 
 /** Check if a profile has DirectDb credentials configured. */
 function hasDbCredentials(p: ConnectionProfile): boolean {
@@ -78,6 +197,8 @@ export function registerConnectDatabaseTool(
   config: Config,
   connectionManager: ConnectionManager,
   rateLimiter: RateLimiter,
+  coordinator: OperationCoordinator,
+  trustStore: ServiceLayerTrustStore,
 ): void {
   const profiles = connectionManager.listAll();
   const profileList = profiles.length > 0
@@ -103,7 +224,7 @@ Use "list" as the query to reload and list all available profiles.`,
         'The database identifier to connect to. Can be the profile ID or database name. Use "list" to see all available profiles.'
       ),
     },
-    async ({ query }) => {
+    async ({ query }, extra) => {
       const rateCheck = rateLimiter.check('connect_database');
       if (!rateCheck.allowed) {
         return {
@@ -112,9 +233,15 @@ Use "list" as the query to reload and list all available profiles.`,
         };
       }
 
-      // Special "list" command: reload profiles and show all
+      return coordinator.runExclusive(async () => {
+
+      // Connection profiles are intentionally reloaded on every connection
+      // request. A DB-only profile can gain SL settings while its DB side is
+      // already active, without requiring a server restart or a separate list.
+      connectionManager.reload();
+
+      // Special "list" command: show the profiles reloaded above
       if (query.toLowerCase() === 'list') {
-        connectionManager.reload();
         const allProfiles = connectionManager.listAll();
 
         if (allProfiles.length === 0) {
@@ -196,7 +323,7 @@ Use "list" as the query to reload and list all available profiles.`,
 
       if (!isSameTarget) {
         const previousDbName = adapter.getDbName() || slAdapter.getDbName();
-        adapter.disconnect();
+        await adapter.disconnect();
         slAdapter.disconnect();
         console.error(`[connect] Switched away from "${previousDbName}" - both connections ended.`);
       }
@@ -221,11 +348,11 @@ Use "list" as the query to reload and list all available profiles.`,
           dbPingMs = check.durationMs;
           if (!check.connected) {
             dbError = check.error;
-            adapter.disconnect();
+            await adapter.disconnect();
           }
         } catch (err) {
           dbError = err instanceof Error ? err.message : String(err);
-          adapter.disconnect();
+          await adapter.disconnect();
         }
 
         if (dbConnected) {
@@ -239,14 +366,24 @@ Use "list" as the query to reload and list all available profiles.`,
       let slConnected = slAlreadyOnTarget;
       let slError: string | undefined;
       let slPingMs: number | undefined;
+      let slLoginAttempted = false;
+      let slTrustAction: ResolvedTlsConfig['trustAction'] | undefined;
 
       if (hasSl && !slAlreadyOnTarget) {
         try {
+          const tls = await resolveServiceLayerTls(profile, config, trustStore, extra);
+          slTrustAction = tls.trustAction;
+          slLoginAttempted = true;
           await slAdapter.init({
             database: profile.dbName,
             username: profile.slUser!,
             password: profile.slPassword || '',
             url: profile.slUrl!,
+            timeoutMs: config.slTimeoutMs,
+            maxResponseChars: config.maxResultChars,
+            tlsMode: tls.tlsMode,
+            tlsServerName: tls.tlsServerName,
+            certificateSha256: tls.certificateSha256,
           });
           const check = await slAdapter.checkConnection();
           slConnected = check.connected;
@@ -262,7 +399,7 @@ Use "list" as the query to reload and list all available profiles.`,
 
         if (slConnected) {
           resetFailures(profile.id, 'sl');
-        } else {
+        } else if (slLoginAttempted) {
           recordFailure(profile.id, 'sl');
         }
       }
@@ -285,6 +422,10 @@ Use "list" as the query to reload and list all available profiles.`,
       if (hasSl) {
         if (slConnected) {
           lines.push(`ServiceLayer: Connected via ${profile.slUrl}${slPingMs != null ? ` - ${slPingMs}ms` : ''}`);
+          lines.push(`ServiceLayer TLS: ${slAdapter.getTlsStatus()}`);
+          if (slTrustAction === 'approved-pin') lines.push(`ServiceLayer TLS trust: Certificate approved and saved to ${trustStore.getFilePath()}`);
+          if (slTrustAction === 'replaced-pin') lines.push(`ServiceLayer TLS trust: Changed certificate approved and replaced in ${trustStore.getFilePath()}`);
+          if (slTrustAction === 'migrated-pin') lines.push(`ServiceLayer TLS trust: Existing profile pin migrated to ${trustStore.getFilePath()}`);
         } else {
           lines.push(`ServiceLayer: FAILED - ${slError}`);
         }
@@ -318,6 +459,7 @@ Use "list" as the query to reload and list all available profiles.`,
         content: [{ type: 'text' as const, text: lines.join('\n') }],
         isError: !anyConnected,
       };
+      });
     },
   );
 }

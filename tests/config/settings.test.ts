@@ -17,6 +17,11 @@ const NUMERIC_VARS = [
   'MCP_RATE_LIMIT_MAX_CALLS',
   'MCP_RATE_LIMIT_WINDOW_MS',
   'MCP_QUERY_TIMEOUT_MS',
+  'MCP_SL_TIMEOUT_MS',
+  'MCP_SL_TRUST_FILE',
+  'MCP_SL_MAX_URL_LENGTH',
+  'MCP_SL_MAX_BODY_CHARS',
+  'MCP_SL_PATCH_ENABLED',
   'MCP_MAX_RESULT_ROWS',
   'MCP_MAX_RESULT_CHARS',
   'MCP_LOG_LEVEL',
@@ -48,6 +53,11 @@ describe('loadConfig — numeric limits fail closed', () => {
     expect(config.rateLimitMaxCalls).toBe(60);
     expect(config.rateLimitWindowMs).toBe(60000);
     expect(config.queryTimeoutMs).toBe(60000);
+    expect(config.slTimeoutMs).toBe(30000);
+    expect(config.slTrustFile).toContain('service-layer-trust.json');
+    expect(config.slMaxUrlLength).toBe(2048);
+    expect(config.slMaxBodyChars).toBe(50000);
+    expect(config.slPatchEnabled).toBe(true);
     expect(config.maxResultRows).toBe(500);
     expect(config.maxResultChars).toBe(100000);
   });
@@ -57,6 +67,11 @@ describe('loadConfig — numeric limits fail closed', () => {
     process.env.MCP_RATE_LIMIT_MAX_CALLS = '10';
     process.env.MCP_RATE_LIMIT_WINDOW_MS = '5000';
     process.env.MCP_QUERY_TIMEOUT_MS = '15000';
+    process.env.MCP_SL_TIMEOUT_MS = '7000';
+    process.env.MCP_SL_TRUST_FILE = '/tmp/custom-sl-trust.json';
+    process.env.MCP_SL_MAX_URL_LENGTH = '512';
+    process.env.MCP_SL_MAX_BODY_CHARS = '1000';
+    process.env.MCP_SL_PATCH_ENABLED = 'false';
     process.env.MCP_MAX_RESULT_ROWS = '50';
     process.env.MCP_MAX_RESULT_CHARS = '2000';
 
@@ -65,6 +80,11 @@ describe('loadConfig — numeric limits fail closed', () => {
     expect(config.rateLimitMaxCalls).toBe(10);
     expect(config.rateLimitWindowMs).toBe(5000);
     expect(config.queryTimeoutMs).toBe(15000);
+    expect(config.slTimeoutMs).toBe(7000);
+    expect(config.slTrustFile).toBe('/tmp/custom-sl-trust.json');
+    expect(config.slMaxUrlLength).toBe(512);
+    expect(config.slMaxBodyChars).toBe(1000);
+    expect(config.slPatchEnabled).toBe(false);
     expect(config.maxResultRows).toBe(50);
     expect(config.maxResultChars).toBe(2000);
   });

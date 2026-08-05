@@ -1,146 +1,324 @@
-// ============================================================================
-// sps-mcp-server — Service Layer Adapter
-// ============================================================================
-//
-// Thin wrapper around the sps-sap-interface ServiceLayer module.
-//
-// Actual API (from npm module):
-//
-//   const { ServiceLayer } = require("sps-sap-interface");
-//
-//   await ServiceLayer.init({
-//     database: "SBO_DEMO",
-//     username: "manager",
-//     password: "1234",
-//     url: "https://server:50000/b1s/v1",
-//     language: "29",    // optional, defaults to "29" (pt-BR)
-//     timeout: 0,        // optional, defaults to 0 (no timeout)
-//   });
-//
-//   // Logs in via POST /Login, stores session cookie.
-//   // Auto-retries on 502 (up to 5x).
-//
-//   const data = await ServiceLayer.execute({
-//     method: "GET",
-//     url: "BusinessPartners?$top=10",
-//     header: { "B1S-CaseInsensitive": "true" },  // optional
-//     data: null,          // optional, JSON body for POST/PATCH
-//     page: 0,             // optional, pagination
-//     size: 20,            // optional, page size
-//     timeout: 30000,      // optional
-//   });
-//
-//   // Auto-reconnects on 401 (re-calls init + retries up to 5x).
-//   // Returns response.data directly.
-//
-// ============================================================================
+import { Agent, request as httpsRequest } from 'node:https';
+import { isIP } from 'node:net';
+import { Duplex } from 'node:stream';
+import {
+  checkServerIdentity,
+  connect as tlsConnect,
+  type ConnectionOptions,
+  type PeerCertificate,
+  type TLSSocket,
+} from 'node:tls';
 
-// ---------------------------------------------------------------------------
-// Interface matching the actual sps-sap-interface ServiceLayer module
-// ---------------------------------------------------------------------------
+// Standard TLS verification remains the default. Pinned mode is an explicit,
+// per-profile compatibility option for SAP installations with expired or
+// self-signed certificates. It authenticates the exact peer certificate before
+// allowing the HTTP request (and therefore the login credentials) to be sent.
 
-export interface ServiceLayerInitConfig {
-  database: string;
-  username: string;
-  password: string;
-  url: string;
-  language?: string;
-  timeout?: number;
-}
-
-export interface ServiceLayerExecuteConfig {
-  url: string;
-  method: string;
-  header?: Record<string, string>;
-  data?: any;
-  page?: number;
-  size?: number;
-  timeout?: number;
-}
-
-export interface ServiceLayerModule {
-  init(config: ServiceLayerInitConfig): Promise<any>;
-  execute(config: ServiceLayerExecuteConfig): Promise<any>;
-}
-
-// ---------------------------------------------------------------------------
-// Result type
-// ---------------------------------------------------------------------------
+export type ServiceLayerTlsMode = 'strict' | 'pinned';
 
 export interface SlResult {
-  data: any;
+  data: unknown;
   durationMs: number;
 }
 
-// ---------------------------------------------------------------------------
-// Service Layer Adapter
-// ---------------------------------------------------------------------------
+export interface ServiceLayerCertificateInspection {
+  origin: string;
+  certificateSha256: string;
+  subject: string;
+  issuer: string;
+  validFrom: string;
+  validTo: string;
+  strictTlsValid: boolean;
+  tlsError?: string;
+  serverName?: string;
+}
 
-export class ServiceLayerAdapter {
-  private readonly sl: ServiceLayerModule;
-  private dbName = '';
-  private slUrl = '';
-  private initialised = false;
+interface TransportResponse {
+  status: number;
+  data: unknown;
+  setCookies: string[];
+}
 
-  constructor(sl: ServiceLayerModule) {
-    this.sl = sl;
+interface PinnedTlsOptions {
+  fingerprintSha256: string;
+  serverName?: string;
+}
+
+function normalizeFingerprint(value: string): string {
+  return value.replace(/[^a-fA-F0-9]/g, '').toUpperCase();
+}
+
+function validateFingerprint(value: string): string {
+  const normalized = normalizeFingerprint(value);
+  if (!/^[A-F0-9]{64}$/.test(normalized)) {
+    throw new Error('Pinned Service Layer TLS requires a 64-hex-character SHA-256 certificate fingerprint.');
+  }
+  return normalized;
+}
+
+function validateServerName(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.trim();
+  if (!normalized || /[/:\\\s]/.test(normalized)) {
+    throw new Error('slTlsServerName must be a DNS name or IP address without a protocol, port, path, or whitespace.');
+  }
+  return normalized;
+}
+
+function safeCertificateName(value: unknown): string {
+  const text = typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value ?? '');
+  return text.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 1_000);
+}
+
+export function canonicalServiceLayerOrigin(rawUrl: string): string {
+  const url = new URL(rawUrl);
+  if (url.protocol !== 'https:') throw new Error('Service Layer URL must use HTTPS.');
+  return `${url.protocol}//${url.hostname.toLowerCase()}:${url.port || '443'}`;
+}
+
+export function inspectServiceLayerCertificate(
+  rawUrl: string,
+  timeoutMs: number,
+  configuredServerName?: string,
+): Promise<ServiceLayerCertificateInspection> {
+  const url = new URL(rawUrl);
+  if (url.protocol !== 'https:') return Promise.reject(new Error('Service Layer URL must use HTTPS.'));
+  const targetHost = url.hostname;
+  const targetPort = Number(url.port || 443);
+  const explicitServerName = validateServerName(configuredServerName);
+  const serverName = explicitServerName || (isIP(targetHost) ? undefined : targetHost);
+
+  return new Promise((resolve, reject) => {
+    const socket = tlsConnect({
+      host: targetHost,
+      port: targetPort,
+      servername: serverName,
+      rejectUnauthorized: false,
+    });
+    const timer = setTimeout(() => socket.destroy(new Error(`TLS inspection timed out after ${timeoutMs}ms`)), timeoutMs);
+
+    socket.once('secureConnect', () => {
+      try {
+        const certificate = socket.getPeerCertificate() as PeerCertificate;
+        if (!certificate.raw || !certificate.fingerprint256) {
+          throw new Error('Service Layer did not present a peer certificate.');
+        }
+
+        const identityName = explicitServerName || targetHost;
+        const identityError = checkServerIdentity(identityName, certificate);
+        const tlsError = identityError?.message || socket.authorizationError?.message || socket.authorizationError;
+        resolve({
+          origin: canonicalServiceLayerOrigin(rawUrl),
+          certificateSha256: certificate.fingerprint256.toUpperCase(),
+          subject: safeCertificateName(certificate.subject),
+          issuer: safeCertificateName(certificate.issuer),
+          validFrom: String(certificate.valid_from || ''),
+          validTo: String(certificate.valid_to || ''),
+          strictTlsValid: socket.authorized && !identityError,
+          tlsError: tlsError ? String(tlsError) : undefined,
+          serverName: explicitServerName,
+        });
+        socket.end();
+      } catch (error) {
+        socket.destroy();
+        reject(error);
+      }
+    });
+    socket.once('error', reject);
+    socket.once('close', () => clearTimeout(timer));
+  });
+}
+
+class PinnedHttpsAgent extends Agent {
+  constructor(
+    private readonly targetHost: string,
+    private readonly targetPort: number,
+    private readonly fingerprintSha256: string,
+    private readonly identityName?: string,
+  ) {
+    super({ keepAlive: false, maxSockets: 1 });
   }
 
-  /**
-   * Initialises (or re-initialises) the Service Layer connection.
-   * Logs in via POST /Login and stores the session cookie.
-   * Can be called multiple times to switch databases.
-   */
+  override createConnection(
+    options: ConnectionOptions,
+    callback: (err: Error | null, stream?: Duplex) => void,
+  ): Duplex {
+    const servername = this.identityName || (isIP(this.targetHost) ? undefined : this.targetHost);
+    const socket = tlsConnect({
+      ...options,
+      host: this.targetHost,
+      port: this.targetPort,
+      servername,
+      rejectUnauthorized: false,
+    });
+
+    let settled = false;
+    const finish = (error: Error | null, stream?: TLSSocket): void => {
+      if (settled) return;
+      settled = true;
+      callback(error, stream);
+    };
+
+    socket.once('secureConnect', () => {
+      try {
+        const certificate = socket.getPeerCertificate() as PeerCertificate;
+        if (!certificate.raw || !certificate.fingerprint256) {
+          throw new Error('Service Layer did not present a peer certificate.');
+        }
+
+        const actualFingerprint = normalizeFingerprint(certificate.fingerprint256);
+        if (actualFingerprint !== this.fingerprintSha256) {
+          throw new Error('Service Layer TLS certificate fingerprint does not match the configured SHA-256 pin.');
+        }
+
+        // DNS URLs validate their DNS identity automatically. IP URLs can
+        // supply slTlsServerName when the certificate names a DNS host instead.
+        const identityName = this.identityName || (isIP(this.targetHost) ? undefined : this.targetHost);
+        if (identityName) {
+          const identityError = checkServerIdentity(identityName, certificate);
+          if (identityError) {
+            throw new Error(`Service Layer TLS identity validation failed for ${identityName}.`);
+          }
+        }
+
+        finish(null, socket);
+      } catch (error) {
+        const safeError = error instanceof Error ? error : new Error(String(error));
+        finish(safeError);
+        socket.destroy(safeError);
+      }
+    });
+    socket.once('error', error => finish(error));
+    return socket;
+  }
+}
+
+export class ServiceLayerAdapter {
+  private dbName = '';
+  private slUrl = '';
+  private cookie = '';
+  private timeoutMs = 30_000;
+  private maxResponseChars = 100_000;
+  private initialised = false;
+  private tlsMode: ServiceLayerTlsMode = 'strict';
+  private pinnedAgent?: Agent;
+
   async init(config: {
     database: string;
     username: string;
     password: string;
     url: string;
+    timeoutMs?: number;
+    maxResponseChars?: number;
+    tlsMode?: ServiceLayerTlsMode;
+    tlsServerName?: string;
+    certificateSha256?: string;
   }): Promise<void> {
-    await this.sl.init({
-      database: config.database,
-      username: config.username,
-      password: config.password,
-      url: config.url,
-    });
+    // Clear any previous session before attempting a new login. A failed
+    // reinitialisation must never leave an old target/cookie usable.
+    this.disconnect();
+    if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
+      throw new Error('Refusing Service Layer login because NODE_TLS_REJECT_UNAUTHORIZED=0 disables TLS verification globally.');
+    }
+
+    const baseUrl = new URL(config.url);
+    if (baseUrl.protocol !== 'https:') {
+      throw new Error('Service Layer URL must use HTTPS.');
+    }
+    if (baseUrl.username || baseUrl.password) {
+      throw new Error('Service Layer URL must not contain credentials.');
+    }
+
+    const tlsMode = config.tlsMode ?? 'strict';
+    if (tlsMode !== 'strict' && tlsMode !== 'pinned') {
+      throw new Error(`Unsupported Service Layer TLS mode: ${String(tlsMode)}.`);
+    }
+
+    let pinnedAgent: Agent | undefined;
+    if (tlsMode === 'pinned') {
+      if (!config.certificateSha256) {
+        throw new Error('Pinned Service Layer TLS requires slCertificateSha256.');
+      }
+      const fingerprint = validateFingerprint(config.certificateSha256);
+      const serverName = validateServerName(config.tlsServerName);
+      pinnedAgent = new PinnedHttpsAgent(
+        baseUrl.hostname,
+        Number(baseUrl.port || 443),
+        fingerprint,
+        serverName,
+      );
+    } else if (config.certificateSha256 || config.tlsServerName) {
+      throw new Error('slCertificateSha256 and slTlsServerName require slTlsMode="pinned".');
+    }
+
+    const normalizedUrl = baseUrl.toString().replace(/\/$/, '');
+    const timeoutMs = config.timeoutMs ?? 30_000;
+    const maxResponseChars = config.maxResponseChars ?? 100_000;
+    const response = await this.request(
+      `${normalizedUrl}/Login`,
+      'POST',
+      {
+        CompanyDB: config.database,
+        UserName: config.username,
+        Password: config.password,
+        Language: '29',
+      },
+      '',
+      timeoutMs,
+      maxResponseChars,
+      pinnedAgent,
+    );
+
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`Service Layer login failed with HTTP ${response.status}.`);
+    }
+
+    const cookie = this.extractSessionCookie(response.setCookies);
+    if (!cookie.includes('B1SESSION=')) {
+      throw new Error('Service Layer login did not return a B1SESSION cookie.');
+    }
 
     this.dbName = config.database;
-    this.slUrl = config.url;
+    this.slUrl = normalizedUrl;
+    this.cookie = cookie;
+    this.timeoutMs = timeoutMs;
+    this.maxResponseChars = maxResponseChars;
+    this.tlsMode = tlsMode;
+    this.pinnedAgent = pinnedAgent;
     this.initialised = true;
 
-    console.error(`[sl-adapter] Connected to Service Layer: ${config.url} (${config.database})`);
+    const tlsDescription = tlsMode === 'pinned'
+      ? 'pinned-certificate TLS (CA/validity errors overridden only for the configured SHA-256 pin)'
+      : 'verified TLS';
+    console.error(`[sl-adapter] Connected to ${tlsDescription}: ${normalizedUrl} (${config.database})`);
   }
 
   getDbName(): string { return this.dbName; }
   getSlUrl(): string { return this.slUrl; }
+  getTlsMode(): ServiceLayerTlsMode { return this.tlsMode; }
+  getTlsStatus(): string {
+    return this.tlsMode === 'pinned'
+      ? 'PINNED TLS — certificate CA/validity verification replaced by an exact SHA-256 pin'
+      : 'verified TLS';
+  }
   isConnected(): boolean { return this.initialised; }
 
-  /**
-   * Disconnects and resets internal state.
-   * After calling this, isConnected() returns false and all operations will fail
-   * until init() is called again.
-   */
   disconnect(): void {
+    this.pinnedAgent?.destroy();
     this.initialised = false;
     this.dbName = '';
     this.slUrl = '';
+    this.cookie = '';
+    this.tlsMode = 'strict';
+    this.pinnedAgent = undefined;
     console.error('[sl-adapter] Disconnected from Service Layer.');
   }
 
-  /**
-   * Pings the Service Layer to verify the connection is alive.
-   * Uses a lightweight GET request to /Branches (same pattern as Conns.js checkSL).
-   */
   async checkConnection(): Promise<{ connected: boolean; durationMs: number; error?: string }> {
     this.ensureInitialised();
     const start = Date.now();
-
     try {
-      await this.sl.execute({
-        method: 'GET',
-        url: 'Branches?$apply=aggregate($count as Count)',
-        timeout: 15000,
-      });
+      await this.execute({ method: 'GET', url: 'Branches?$select=Code&$top=1' });
       return { connected: true, durationMs: Date.now() - start };
     } catch (err) {
       return {
@@ -151,38 +329,29 @@ export class ServiceLayerAdapter {
     }
   }
 
-  /**
-   * Executes an OData request against the Service Layer.
-   */
-  async execute(config: {
-    method: string;
-    url: string;
-    data?: any;
-    header?: Record<string, string>;
-    page?: number;
-    size?: number;
-    timeout?: number;
-  }): Promise<SlResult> {
+  async execute(config: { method: string; url: string; data?: unknown }): Promise<SlResult> {
     this.ensureInitialised();
     const start = Date.now();
 
     try {
-      const data = await this.sl.execute({
-        method: config.method,
-        url: config.url,
-        data: config.data,
-        header: config.header,
-        page: config.page,
-        size: config.size,
-        timeout: config.timeout ?? 0,
-      });
+      const response = await this.request(
+        `${this.slUrl}/${config.url}`,
+        config.method,
+        config.data,
+        this.cookie,
+        this.timeoutMs,
+        this.maxResponseChars,
+        this.pinnedAgent,
+      );
 
-      return {
-        data,
-        durationMs: Date.now() - start,
-      };
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return { data: response.data, durationMs: Date.now() - start };
     } catch (err) {
-      throw this.wrapError(err, config.method, config.url);
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[sl-adapter] ${config.method} ${config.url} failed: ${message}`);
+      throw new Error(`Service Layer request failed: ${message}`);
     }
   }
 
@@ -192,9 +361,136 @@ export class ServiceLayerAdapter {
     }
   }
 
-  private wrapError(err: unknown, method: string, url: string): Error {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[sl-adapter] ${method} ${url} error:`, err);
-    return new Error(`Service Layer request failed: ${message}`);
+  private extractSessionCookie(values: string[]): string {
+    const cookies: string[] = [];
+    for (const value of values) {
+      for (const name of ['B1SESSION', 'ROUTEID']) {
+        const match = new RegExp(`(?:^|,\\s*)${name}=([^;,]+)`, 'i').exec(value);
+        if (match) cookies.push(`${name}=${match[1]}`);
+      }
+    }
+    return cookies.join('; ');
+  }
+
+  private async request(
+    url: string,
+    method: string,
+    data: unknown,
+    cookie: string,
+    timeoutMs: number,
+    maxResponseChars: number,
+    pinnedAgent?: Agent,
+  ): Promise<TransportResponse> {
+    const body = data === undefined ? undefined : JSON.stringify(data);
+    if (pinnedAgent) {
+      return this.requestWithPinnedTls(url, method, body, cookie, timeoutMs, maxResponseChars, pinnedAgent);
+    }
+
+    const response = await fetch(url, {
+      method,
+      redirect: 'error',
+      headers: {
+        ...(cookie ? { Cookie: cookie } : {}),
+        'Content-Type': 'application/json',
+      },
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return {
+      status: response.status,
+      data: await this.readBoundedFetchResponse(response, maxResponseChars),
+      setCookies: typeof (response.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie === 'function'
+        ? (response.headers as Headers & { getSetCookie: () => string[] }).getSetCookie()
+        : [response.headers.get('set-cookie') || ''],
+    };
+  }
+
+  private requestWithPinnedTls(
+    url: string,
+    method: string,
+    body: string | undefined,
+    cookie: string,
+    timeoutMs: number,
+    maxResponseChars: number,
+    agent: Agent,
+  ): Promise<TransportResponse> {
+    return new Promise((resolve, reject) => {
+      const request = httpsRequest(url, {
+        method,
+        agent,
+        headers: {
+          ...(cookie ? { Cookie: cookie } : {}),
+          'Content-Type': 'application/json',
+          ...(body === undefined ? {} : { 'Content-Length': Buffer.byteLength(body) }),
+        },
+      }, response => {
+        const declaredLength = Number(response.headers['content-length']);
+        if (Number.isFinite(declaredLength) && declaredLength > maxResponseChars) {
+          response.destroy(new Error(`response exceeds ${maxResponseChars} characters`));
+          return;
+        }
+
+        response.setEncoding('utf8');
+        let text = '';
+        response.on('data', chunk => {
+          text += chunk;
+          if (text.length > maxResponseChars) {
+            response.destroy(new Error(`response exceeds ${maxResponseChars} characters`));
+          }
+        });
+        response.on('error', reject);
+        response.on('end', () => {
+          let parsed: unknown = null;
+          if (text) {
+            try {
+              parsed = JSON.parse(text);
+            } catch {
+              parsed = text;
+            }
+          }
+          resolve({
+            status: response.statusCode ?? 0,
+            data: parsed,
+            setCookies: response.headers['set-cookie'] ?? [],
+          });
+        });
+      });
+
+      request.setTimeout(timeoutMs, () => request.destroy(new Error(`request timed out after ${timeoutMs}ms`)));
+      request.on('error', reject);
+      if (body !== undefined) request.write(body);
+      request.end();
+    });
+  }
+
+  private async readBoundedFetchResponse(response: Response, maxResponseChars: number): Promise<unknown> {
+    if (response.status === 204 || !response.body) return null;
+
+    const declaredLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declaredLength) && declaredLength > maxResponseChars) {
+      await response.body.cancel();
+      throw new Error(`response exceeds ${maxResponseChars} characters`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let text = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+      if (text.length > maxResponseChars) {
+        await reader.cancel();
+        throw new Error(`response exceeds ${maxResponseChars} characters`);
+      }
+    }
+    text += decoder.decode();
+    if (!text) return null;
+
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
   }
 }
