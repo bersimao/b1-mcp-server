@@ -39,6 +39,13 @@ function dbConnectionKey(profile: Record<string, unknown>): string {
   ])).digest('hex');
 }
 
+function slConnectionKey(profile: Record<string, unknown>): string {
+  return createHash('sha256').update(JSON.stringify([
+    profile.id, profile.dbName, profile.slUrl, profile.slUser, profile.slPassword,
+    profile.slTlsMode, profile.slTlsServerName, profile.slCertificateSha256,
+  ])).digest('hex');
+}
+
 function setup() {
   const directory = mkdtempSync(join(tmpdir(), 'connect-tool-test-'));
   directories.push(directory);
@@ -171,6 +178,39 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(ctx.directDb.init).toHaveBeenCalledWith(expect.objectContaining({
       server: 'prod-db:30015', database: 'SBO_CLIENT', username: 'prod-user',
     }));
+  });
+
+  it('reconnects the untouched side after one side of the same profile changes', async () => {
+    // Only the DB password rotated on disk. That forces a full teardown of both
+    // sides, so the unchanged Service Layer side must be logged in again instead
+    // of being reported as still connected on the strength of a stale flag.
+    const ctx = setup();
+    const profile = {
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+      dbServer: 'db:30015', dbUser: 'db-user', dbPassword: 'db-secret',
+      slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+    };
+    Object.assign(ctx.sl, {
+      dbName: 'SBO_CLIENT', slUrl: profile.slUrl, cookie: 'B1SESSION=live',
+      initialised: true, connectionKey: slConnectionKey(profile),
+    });
+    inspectCertificate.mockResolvedValue({
+      origin: 'https://sap.example.com:50000', certificateSha256: 'AA:BB',
+      subject: '{}', issuer: '{}', validFrom: 'now', validTo: 'later',
+      strictTlsValid: true,
+    });
+    writeProfiles(ctx.connectionsFile, [{ ...profile, dbPassword: 'db-rotated' }]);
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest: vi.fn() });
+
+    expect(result.isError).toBeFalsy();
+    expect(ctx.directDb.init).toHaveBeenCalledWith(expect.objectContaining({ password: 'db-rotated' }));
+    // The stale flag used to skip this login while still reporting "Connected".
+    expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({
+      database: 'SBO_CLIENT', url: profile.slUrl, username: 'sl-user',
+    }));
+    expect(ctx.db.isConnected()).toBe(true);
+    expect(result.content[0].text).toContain('ServiceLayer: Connected');
   });
 
   it('disconnects Service Layer even when closing DirectDb fails', async () => {

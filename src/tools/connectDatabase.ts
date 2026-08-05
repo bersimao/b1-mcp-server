@@ -334,8 +334,8 @@ Use "list" as the query to reload and list all available profiles.`,
       const dbTargetKey = dbConnectionKey(profile);
       const slTargetKey = slConnectionKey(profile);
 
-      const dbAlreadyOnTarget = adapter.isConnected() && adapter.getConnectionKey() === dbTargetKey;
-      const slAlreadyOnTarget = slAdapter.isConnected() && slAdapter.getConnectionKey() === slTargetKey;
+      let dbAlreadyOnTarget = adapter.isConnected() && adapter.getConnectionKey() === dbTargetKey;
+      let slAlreadyOnTarget = slAdapter.isConnected() && slAdapter.getConnectionKey() === slTargetKey;
 
       // Both already connected to the target - nothing to do
       if (dbAlreadyOnTarget && slAlreadyOnTarget) {
@@ -358,6 +358,12 @@ Use "list" as the query to reload and list all available profiles.`,
           // be torn down so a failed switch cannot leave it usable by mistake.
           slAdapter.disconnect();
         }
+        // Both sides are down now, so neither may be treated as still on target.
+        // One side's key can match while the other's does not (a profile edited
+        // between calls); without this, the matching side would be skipped below
+        // and still reported as connected after having just been torn down.
+        dbAlreadyOnTarget = false;
+        slAlreadyOnTarget = false;
         console.error(`[connect] Switched away from "${previousDbName}" - both connections ended.`);
       }
 
