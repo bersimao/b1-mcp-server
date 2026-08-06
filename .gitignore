@@ -4,3 +4,4 @@ logs/
 .env
 *.tgz
 .claude/
+CLAUDE.local.md

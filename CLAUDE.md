@@ -2,20 +2,6 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project reference
-- **Project note:** [MCP sps-db](file:///mnt/c/Users/bernardo.simao/repos_local/OBSIDIAN/obsidian_work/MCP%20sps-db.md)
-- **OneDrive (docs/entregáveis):** file:///mnt/c/Users/bernardo.simao/OneDrive%20-%20SPS%20Consultoria/Dados/PROJETOS/SPS/MCP%20sps-db
-- Registry: this demand is registered in `~/.claude/data/demands.json`.
-
-## Session behavior
-- On session start, read the project note and surface its **open doubts**
-  (`- [ ] #duvida`) in one short line. No doubts → say nothing.
-- When we hit a genuine ambiguity (spec unclear, missing definition), don't let
-  it die in chat: add it as `- [ ] #duvida ...` under the relevant TO-DO task in
-  the project note (see the `duvida` skill) and tell me you logged it.
-- Deliverables (final SQL, evidence, docs sent to the client) are COPIED to the
-  OneDrive folder above; intermediate/throwaway files stay here in the workdir.
-
 ## Project
 
 `sps-mcp-server` is a Model Context Protocol server that gives an AI client guarded access to SAP Business One via both `DirectDb` (HANA / MS SQL) and the Service Layer OData API. Both sides are local: `src/db/directDb.ts` on `@sap/hana-client` + `mssql`, and a verified-TLS `fetch` adapter for the Service Layer.
@@ -93,7 +79,7 @@ The database driver, built directly on `@sap/hana-client` + `mssql` + `generic-p
 - The HANA pool releases the connection **on the error path too**. That is what lets it survive a poisoned query instead of leaking a slot per timeout.
 - **`encrypt: false` is pinned explicitly for MS SQL.** `mssql@6` defaulted to no encryption and every on-prem SAP B1 profile was configured against that; `mssql@11` flips the default to `true`. Pinning it stops a driver bump from silently breaking every profile. Turning it on properly needs a per-profile opt-in and a certificate story, like the Service Layer adapter has.
 
-**Re-validate after any driver bump.** [scripts/validate-directdb.ts](scripts/validate-directdb.ts) runs the read-only checks plus the timeout / pool-poisoning behaviour against a real server (`npx tsx scripts/validate-directdb.ts <profile-id> [--timeouts]`; `--timeouts` is opt-in because it holds a session open until the server kills the statement). Mocked unit tests cannot catch driver breakage — all three drivers are CommonJS, so `import { ConnectionPool } from 'mssql'` typechecks and then throws at runtime, and a green unit suite says nothing about it. Last run on `mssql@11.0.1` / `@sap/hana-client@2.29.25`: all checks passed on HANA (`hana_profile`) and MS SQL (`mssql_profile`), timeout shape and pool recovery unchanged from the values documented above.
+**Re-validate after any driver bump.** [scripts/validate-directdb.ts](scripts/validate-directdb.ts) runs the read-only checks plus the timeout / pool-poisoning behaviour against a real server (`npx tsx scripts/validate-directdb.ts <profile-id> [--timeouts]`; `--timeouts` is opt-in because it holds a session open until the server kills the statement). Mocked unit tests cannot catch driver breakage — all three drivers are CommonJS, so `import { ConnectionPool } from 'mssql'` typechecks and then throws at runtime, and a green unit suite says nothing about it. Last run on `mssql@11.0.1` / `@sap/hana-client@2.29.25`: all checks passed against a real HANA server and a real MS SQL server, timeout shape and pool recovery unchanged from the values documented above.
 
 ### Service Layer
 
