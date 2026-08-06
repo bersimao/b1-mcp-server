@@ -66,6 +66,22 @@ function connectHana(params: Record<string, string | number>): Promise<HanaConne
   });
 }
 
+// DELIBERATELY DIVERGES from stripComments() in guardrails/parser.ts. Do not
+// unify the two scanners.
+//
+// This one nests block comments; the guardrail's stops at the first close
+// marker. Both are correct for their job:
+//
+//   - Here, nesting matches the engine. T-SQL nests block comments, and this
+//     runs only on the MS SQL path (execMssql is the sole caller), so matching
+//     the parser that will actually execute the statement is the point.
+//   - In the guardrail, NOT nesting is what keeps it fail-closed. Given
+//     `/* /* */ DROP TABLE OITM */`, its scanner resumes at the inner close and
+//     sees `DROP TABLE OITM` as live code, so the statement is denied. Teaching
+//     it to nest would make a nested comment a place to hide a write keyword.
+//
+// See the "Quoting is load-bearing" notes in CLAUDE.md and the regression
+// payloads in tests/guardrails/quotedSpanEvasion.test.ts.
 /**
  * Blanks SQL comments without changing string length or character offsets.
  * Quoted spans must already have been blanked before this runs, so comment
