@@ -1,5 +1,5 @@
 // ============================================================================
-// sps-mcp-server — Table Classifier
+// b1-mcp-server — Table Classifier
 // ============================================================================
 //
 // Determines the type of a database table based on SAP B1 naming conventions.

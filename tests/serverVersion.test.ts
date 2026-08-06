@@ -28,7 +28,7 @@ describe('advertised server version', () => {
 
   it('resolves ../package.json from the build layout', () => {
     // dist/server.js -> ../package.json must hit the same file once published as
-    // node_modules/sps-mcp-server/dist/server.js.
+    // node_modules/b1-mcp-server/dist/server.js.
     const built = resolve(import.meta.dirname, '../dist/server.js');
     if (!existsSync(built)) return; // npm test does not build first
     const resolved = createRequire(built)('../package.json') as { version: string };
@@ -44,7 +44,7 @@ describe('advertised server version', () => {
 
 describe('published executable metadata', () => {
   it('exposes the npx command without npm publish normalization', () => {
-    expect(rootPackage.bin).toEqual({ 'sps-mcp-server': 'dist/index.js' });
+    expect(rootPackage.bin).toEqual({ 'b1-mcp': 'dist/index.js' });
 
     const entrypoint = readFileSync(resolve(import.meta.dirname, '../src/index.ts'), 'utf8');
     expect(entrypoint.startsWith('#!/usr/bin/env node\n')).toBe(true);

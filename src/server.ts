@@ -1,5 +1,5 @@
 // ============================================================================
-// sps-mcp-server — Server Setup
+// b1-mcp-server — Server Setup
 // ============================================================================
 //
 // Creates the MCP server and registers all tools.
@@ -32,7 +32,7 @@ import { ServiceLayerTrustStore } from './security/serviceLayerTrustStore.js';
 // to 1.0.0 while the package was 1.1.0, and serverInfo.version is what an
 // operator reads to confirm a restart actually picked up new code.
 // '../package.json' resolves identically from src/ (tsx, vitest) and dist/
-// (published: node_modules/sps-mcp-server/dist/server.js -> ../package.json).
+// (published: node_modules/b1-mcp-server/dist/server.js -> ../package.json).
 const SERVER_VERSION: string = createRequire(import.meta.url)('../package.json').version;
 
 /**
@@ -63,7 +63,7 @@ export async function createServer(
 
   // Create MCP server
   const server = new McpServer({
-    name: 'sps-mcp-server',
+    name: 'b1-mcp-server',
     version: SERVER_VERSION,
   });
 

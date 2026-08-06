@@ -1,5 +1,5 @@
 // ============================================================================
-// sps-mcp-server — General Input Validator
+// b1-mcp-server — General Input Validator
 // ============================================================================
 //
 // Pre-flight checks applied to ALL incoming queries before they reach

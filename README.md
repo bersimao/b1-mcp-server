@@ -1,4 +1,4 @@
-# sps-mcp-server
+# b1-mcp-server
 
 A secure [Model Context Protocol](https://modelcontextprotocol.io) server that
 gives an AI client (e.g. Claude Code) guarded access to SAP Business One via
@@ -23,7 +23,7 @@ both the database (HANA / MS SQL) and the Service Layer OData API.
 ## Install
 
 ```bash
-npx sps-mcp-server
+npx b1-mcp-server
 ```
 
 Or add to your Claude Code MCP config:
@@ -33,7 +33,7 @@ Or add to your Claude Code MCP config:
   "mcpServers": {
     "sps-db": {
       "command": "npx",
-      "args": ["-y", "sps-mcp-server"]
+      "args": ["-y", "b1-mcp-server"]
     }
   }
 }
@@ -49,7 +49,7 @@ through the strict-TLS adapter in `src/sl/serviceLayerAdapter.ts` using Node's
 own `fetch` and `https`. No HTTP framework, no axios, no PostgreSQL driver.
 
 A clean install audits at `found 0 vulnerabilities` with no `overrides` block,
-which also means `npx -y sps-mcp-server` is clean — overrides never applied
+which also means `npx -y b1-mcp-server` is clean — overrides never applied
 there, since npx runs without a root `package.json`.
 
 ## Connection profiles
@@ -179,7 +179,7 @@ All optional.
 | Variable | Default | Purpose |
 |---|---|---|
 | `MCP_CONNECTIONS_FILE` | `~/.claude/connections.json` | Path to profile file |
-| `MCP_AUDIT_LOG_PATH` | `~/.claude/logs/sps-mcp-audit.jsonl` | Audit log JSONL file. Empty disables file logging |
+| `MCP_AUDIT_LOG_PATH` | `~/.claude/logs/b1-mcp-audit.jsonl` | Audit log JSONL file. Empty disables file logging |
 | `MCP_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `MCP_MAX_QUERY_LENGTH` | `8000` | Max SQL length in characters |
 | `MCP_RATE_LIMIT_MAX_CALLS` | `60` | Max calls per tool per window |

@@ -1,6 +1,6 @@
-# Security Model — sps-mcp-server
+# Security Model — b1-mcp-server
 
-This document describes the security architecture of sps-mcp-server, an MCP server that gives an AI client guarded access to SAP Business One via the database (HANA / MS SQL) and the Service Layer OData API.
+This document describes the security architecture of b1-mcp-server, an MCP server that gives an AI client guarded access to SAP Business One via the database (HANA / MS SQL) and the Service Layer OData API.
 
 It describes the server **as built**. Where a defence has a known limit, that limit is stated rather than omitted — see [Known limitations](#known-limitations).
 

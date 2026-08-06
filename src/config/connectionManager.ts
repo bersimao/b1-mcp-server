@@ -1,5 +1,5 @@
 // ============================================================================
-// sps-mcp-server - Connection Manager
+// b1-mcp-server - Connection Manager
 // ============================================================================
 //
 // Loads database connection profiles from a JSON file (default:

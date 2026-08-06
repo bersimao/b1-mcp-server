@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`sps-mcp-server` is a Model Context Protocol server that gives an AI client guarded access to SAP Business One via both `DirectDb` (HANA / MS SQL) and the Service Layer OData API. Both sides are local: `src/db/directDb.ts` on `@sap/hana-client` + `mssql`, and a verified-TLS `fetch` adapter for the Service Layer.
+`b1-mcp-server` is a Model Context Protocol server that gives an AI client guarded access to SAP Business One via both `DirectDb` (HANA / MS SQL) and the Service Layer OData API. Both sides are local: `src/db/directDb.ts` on `@sap/hana-client` + `mssql`, and a verified-TLS `fetch` adapter for the Service Layer.
 
 **Read-only SQL posture:** DirectDb executes only `SELECT` (and anonymous blocks whose statements are all reads); every `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` is blocked. Service Layer allows `GET` and guarded `PATCH`. PATCH requires a directly keyed entity and explicit user acceptance through MCP form elicitation; clients without elicitation support fail closed. SQL writes remain the human's job.
 
@@ -132,7 +132,7 @@ Always blocked in raw SQL regardless: `EXEC` / `EXECUTE` / `CALL`, `CREATE` / `A
 
 ### Audit log
 
-[src/logging/auditLogger.ts](src/logging/auditLogger.ts) writes JSON Lines to stderr (always) and optionally to a file (default: `~/.claude/logs/sps-mcp-audit.jsonl`, set via `MCP_AUDIT_LOG_PATH`). Logging happens **before execution** — denied operations are recorded too — and SQL execution writes a second completion/failure record with duration or error details. The MCP stdio transport uses stdout for JSON-RPC, so logs must never go to stdout.
+[src/logging/auditLogger.ts](src/logging/auditLogger.ts) writes JSON Lines to stderr (always) and optionally to a file (default: `~/.claude/logs/b1-mcp-audit.jsonl`, set via `MCP_AUDIT_LOG_PATH`). Logging happens **before execution** — denied operations are recorded too — and SQL execution writes a second completion/failure record with duration or error details. The MCP stdio transport uses stdout for JSON-RPC, so logs must never go to stdout.
 
 ## Layout
 

@@ -1,5 +1,5 @@
 // ============================================================================
-// sps-mcp-server — Database Adapter
+// b1-mcp-server — Database Adapter
 // ============================================================================
 //
 // Thin wrapper around the DirectDb module in src/db/directDb.ts.

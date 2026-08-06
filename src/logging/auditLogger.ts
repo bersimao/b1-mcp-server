@@ -1,5 +1,5 @@
 // ============================================================================
-// sps-mcp-server — Audit Logger
+// b1-mcp-server — Audit Logger
 // ============================================================================
 //
 // Every operation — allowed or denied — is logged BEFORE execution.

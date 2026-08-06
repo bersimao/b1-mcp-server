@@ -11,7 +11,7 @@ import { ConnectionManager } from '../src/config/connectionManager.js';
 import { DirectDb } from '../src/db/directDb.js';
 
 async function main() {
-  console.log('=== sps-mcp-server Connection Test ===\n');
+  console.log('=== b1-mcp-server Connection Test ===\n');
 
   // 1. Resolve profile from CLI arg
   const profileId = process.argv[2];

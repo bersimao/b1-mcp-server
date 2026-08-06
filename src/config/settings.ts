@@ -1,5 +1,5 @@
 // ============================================================================
-// sps-mcp-server — Configuration
+// b1-mcp-server — Configuration
 // ============================================================================
 //
 // All configuration is centralised here. Values come from environment
@@ -134,7 +134,7 @@ export function loadConfig(): Config {
 
     maxQueryLength: positiveIntEnv('MCP_MAX_QUERY_LENGTH', 8000),
 
-    auditLogPath: process.env.MCP_AUDIT_LOG_PATH || resolve(homedir(), '.claude', 'logs', 'sps-mcp-audit.jsonl'),
+    auditLogPath: process.env.MCP_AUDIT_LOG_PATH || resolve(homedir(), '.claude', 'logs', 'b1-mcp-audit.jsonl'),
 
     logLevel: logLevelEnv(),
 

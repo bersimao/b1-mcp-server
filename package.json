@@ -1,11 +1,11 @@
 {
-  "name": "sps-mcp-server",
+  "name": "b1-mcp-server",
   "version": "1.3.0",
   "description": "Secure MCP server for SAP Business One database (HANA / MS SQL) and Service Layer operations",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "sps-mcp-server": "dist/index.js"
+    "b1-mcp": "dist/index.js"
   },
   "files": [
     "dist/",
@@ -29,12 +29,12 @@
   "author": "Bernardo Simão",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bersimao/sps-mcp-server.git"
+    "url": "git+https://github.com/bersimao/b1-mcp-server.git"
   },
   "bugs": {
-    "url": "https://github.com/bersimao/sps-mcp-server/issues"
+    "url": "https://github.com/bersimao/b1-mcp-server/issues"
   },
-  "homepage": "https://github.com/bersimao/sps-mcp-server#readme",
+  "homepage": "https://github.com/bersimao/b1-mcp-server#readme",
   "scripts": {
     "prebuild": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "tsc",

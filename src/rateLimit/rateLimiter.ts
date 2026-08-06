@@ -1,5 +1,5 @@
 // ============================================================================
-// sps-mcp-server — Rate Limiter
+// b1-mcp-server — Rate Limiter
 // ============================================================================
 //
 // Sliding-window rate limiter to prevent AI runaway loops.

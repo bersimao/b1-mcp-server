@@ -1,5 +1,5 @@
 // ============================================================================
-// sps-mcp-server — SQL Parser
+// b1-mcp-server — SQL Parser
 // ============================================================================
 //
 // A lightweight, security-focused SQL tokeniser and classifier.
