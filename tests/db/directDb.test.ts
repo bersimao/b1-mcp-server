@@ -66,6 +66,7 @@ async function connectedMssql(overrides: Record<string, unknown> = {}) {
 afterEach(() => {
   vi.clearAllMocks();
   mocks.createConnection.mockReturnValue(mocks.hanaClient);
+  mocks.hanaClient.connect.mockImplementation((_params, cb) => cb(null));
   mocks.mssqlRequest.input.mockReturnValue(mocks.mssqlRequest);
   mocks.mssqlRequest.query.mockResolvedValue({ recordset: [] });
   mocks.mssqlPool.request.mockReturnValue(mocks.mssqlRequest);
@@ -98,6 +99,22 @@ describe('bindMssqlPlaceholders', () => {
     expect(bound.count).toBe(1);
   });
 
+  it('leaves question marks inside line comments alone', () => {
+    const bound = bindMssqlPlaceholders('SELECT ? AS A -- why?\r\n, ? AS B');
+    expect(bound.sql).toBe(
+      'SELECT @mssqlboundparm0 AS A -- why?\r\n, @mssqlboundparm1 AS B',
+    );
+    expect(bound.count).toBe(2);
+  });
+
+  it('leaves question marks inside nested block comments alone', () => {
+    const bound = bindMssqlPlaceholders('SELECT ? AS A /* why? /* still? */ yes? */, ? AS B');
+    expect(bound.sql).toBe(
+      'SELECT @mssqlboundparm0 AS A /* why? /* still? */ yes? */, @mssqlboundparm1 AS B',
+    );
+    expect(bound.count).toBe(2);
+  });
+
   it('returns the statement untouched when there is nothing to bind', () => {
     const sql = 'SELECT CURRENT_DATE FROM DUMMY';
     expect(bindMssqlPlaceholders(sql)).toEqual({ sql, count: 0 });
@@ -105,6 +122,31 @@ describe('bindMssqlPlaceholders', () => {
 });
 
 describe('DirectDb — HANA', () => {
+  it('authenticates once and bounds the single-session pool', async () => {
+    await connectedHana();
+
+    expect(mocks.createConnection).toHaveBeenCalledOnce();
+    expect(mocks.hanaClient.connect).toHaveBeenCalledOnce();
+    expect(mocks.createPool).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ max: 1, min: 1, acquireTimeoutMillis: 60_000 }),
+    );
+  });
+
+  it('fails init after the first rejected login without creating a retrying pool', async () => {
+    mocks.hanaClient.connect.mockImplementationOnce((_params, cb) => cb(new Error('authentication failed')));
+
+    const db = new DirectDb();
+    await expect(db.init({
+      server: 'hana-host:30015', database: 'SBO_TEST', databaseType: 'HANA',
+      username: 'SYSTEM', password: 'wrong', timeout: 60_000,
+    })).rejects.toThrow('authentication failed');
+
+    expect(mocks.createConnection).toHaveBeenCalledOnce();
+    expect(mocks.hanaClient.connect).toHaveBeenCalledOnce();
+    expect(mocks.createPool).not.toHaveBeenCalled();
+  });
+
   it('maps the timeout to communicationTimeout and pins the schema', async () => {
     await connectedHana();
 

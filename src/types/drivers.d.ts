@@ -69,6 +69,7 @@ declare module 'generic-pool' {
   export interface PoolOptions {
     max?: number;
     min?: number;
+    acquireTimeoutMillis?: number;
   }
 
   export interface Pool<T> {

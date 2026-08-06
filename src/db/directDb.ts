@@ -9,9 +9,9 @@
 // The behaviour was ported deliberately rather than redesigned: the timeout
 // mapping, the {db} placeholder, the ? -> @mssqlboundparmN rewrite and the
 // release-on-error pool discipline all match what was measured against real
-// HANA and MS SQL servers, so existing profiles kept working unchanged. Three
-// places knowingly differ from the old module, each marked below: async HANA
-// connect, quote-aware ? rewriting, and an explicit `encrypt` flag.
+// HANA and MS SQL servers, so existing profiles kept working unchanged. The
+// deliberate differences are documented at the relevant call sites: bounded
+// async HANA startup, quote/comment-aware ? rewriting, and explicit MS SQL TLS.
 // ============================================================================
 
 import hanaClient from '@sap/hana-client';
@@ -32,14 +32,7 @@ const { createConnection } = hanaClient;
 const { ConnectionPool } = mssql;
 const { createPool } = genericPool;
 
-/** Matches the original module's defaults. Tunable so Stage 2 can measure. */
-export interface PoolSettings {
-  max?: number;
-  min?: number;
-}
-
 export interface DirectDbConfig extends DirectDbInitConfig {
-  poolSettings?: PoolSettings;
   /**
    * MS SQL TLS. Left at `false` because mssql@6 — the version this replaces —
    * defaulted to no encryption, and every existing on-prem SAP B1 profile was
@@ -65,18 +58,74 @@ function splitServer(server: string): { host: string; port?: number } {
   return { host: server.slice(0, separator), port };
 }
 
+/** Opens one HANA session through the non-blocking callback overload. */
+function connectHana(params: Record<string, string | number>): Promise<HanaConnection> {
+  return new Promise<HanaConnection>((resolve, reject) => {
+    const client = createConnection();
+    client.connect(params, err => (err ? reject(err) : resolve(client)));
+  });
+}
+
+/**
+ * Blanks SQL comments without changing string length or character offsets.
+ * Quoted spans must already have been blanked before this runs, so comment
+ * markers inside literals or identifiers cannot start a false comment.
+ */
+function blankCommentSpans(sql: string): string {
+  const chars = sql.split('');
+  let i = 0;
+
+  while (i < chars.length) {
+    if (chars[i] === '-' && chars[i + 1] === '-') {
+      while (i < chars.length && chars[i] !== '\n' && chars[i] !== '\r') {
+        chars[i] = ' ';
+        i++;
+      }
+      continue;
+    }
+
+    if (chars[i] === '/' && chars[i + 1] === '*') {
+      let depth = 0;
+      while (i < chars.length) {
+        if (chars[i] === '/' && chars[i + 1] === '*') {
+          chars[i] = ' ';
+          chars[i + 1] = ' ';
+          depth++;
+          i += 2;
+          continue;
+        }
+        if (chars[i] === '*' && chars[i + 1] === '/') {
+          chars[i] = ' ';
+          chars[i + 1] = ' ';
+          depth--;
+          i += 2;
+          if (depth === 0) break;
+          continue;
+        }
+        chars[i] = ' ';
+        i++;
+      }
+      continue;
+    }
+
+    i++;
+  }
+
+  return chars.join('');
+}
+
 /**
  * Rewrites `?` placeholders to the named parameters MS SQL requires.
  *
- * DIFFERS FROM THE ORIGINAL: it skips `?` inside string literals and quoted
- * identifiers. The original ran `while (/\?/.test(q)) q.replace("?", ...)` over
- * the raw text, so `WHERE Comments = 'why?'` had its literal rewritten into a
- * parameter reference and the binding count then disagreed with the statement.
- * blankQuotedSpans is the guardrail engine's scanner and preserves offsets, so
- * positions found in the blanked copy index straight into the real SQL.
+ * DIFFERS FROM THE ORIGINAL: it skips `?` inside string literals, quoted
+ * identifiers and comments. The original ran
+ * `while (/\?/.test(q)) q.replace("?", ...)` over the raw text, so a literal or
+ * comment containing `?` was rewritten into a parameter reference and the
+ * binding count then disagreed with the statement. Both scanners preserve
+ * offsets, so positions found in the blanked copy index straight into the SQL.
  */
 export function bindMssqlPlaceholders(sql: string): { sql: string; count: number } {
-  const blanked = blankQuotedSpans(sql);
+  const blanked = blankCommentSpans(blankQuotedSpans(sql));
   let out = '';
   let last = 0;
   let count = 0;
@@ -104,13 +153,13 @@ export class DirectDb implements DirectDbModule {
     const timeout = config.timeout ?? 600_000;
 
     if (this.isHana) {
-      this.initHana(config, timeout);
+      await this.initHana(config, timeout);
     } else {
       await this.initMssql(config, timeout);
     }
   }
 
-  private initHana(config: DirectDbConfig, timeout: number): void {
+  private async initHana(config: DirectDbConfig, timeout: number): Promise<void> {
     const params = {
       serverNode: config.server,
       UID: config.username,
@@ -119,26 +168,32 @@ export class DirectDb implements DirectDbModule {
       communicationTimeout: timeout,
     };
 
+    // Authenticate exactly once before exposing the pool. generic-pool does not
+    // propagate factory creation errors to acquire(): with an invalid password,
+    // an unbounded acquire would retry logins until the database locks the user.
+    // Priming the pool makes init fail on the first rejected login instead.
+    const firstClient = await connectHana(params);
+    let primedClient: HanaConnection | undefined = firstClient;
+
     this.hanaPool = createPool<HanaConnection>({
-      create: () => new Promise<HanaConnection>((resolve, reject) => {
-        const client = createConnection();
-        // DIFFERS FROM THE ORIGINAL: the callback form. The original called the
-        // synchronous overload, which blocks the event loop for the whole TCP
-        // handshake and login — on a single-threaded MCP server that stalls
-        // every other tool, including the ones meant to time it out.
-        client.connect(params, err => (err ? reject(err) : resolve(client)));
-      }),
+      create: () => {
+        if (primedClient) {
+          const client = primedClient;
+          primedClient = undefined;
+          return Promise.resolve(client);
+        }
+        return connectHana(params);
+      },
       destroy: client => new Promise<void>(resolve => {
         client.disconnect(() => resolve());
       }),
     }, {
-      // ponytail: OperationCoordinator serialises every query, so a pool this
-      // size only ever holds idle SAP sessions. Kept at the original values so
-      // Stage 2 measures a like-for-like port; shrink to min 1 / max 2 once the
-      // timeout and poisoning behaviour is confirmed unchanged.
-      max: 10,
-      min: 5,
-      ...config.poolSettings,
+      // OperationCoordinator serialises live MCP traffic, so one session is
+      // sufficient. The deadline also bounds standalone callers queued behind
+      // that session instead of letting pool.acquire() wait forever.
+      max: 1,
+      min: 1,
+      acquireTimeoutMillis: timeout,
     });
   }
 

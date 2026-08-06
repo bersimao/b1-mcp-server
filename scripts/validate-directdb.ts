@@ -132,8 +132,8 @@ async function runSuite(
     }
   }
 
-  // Concurrency: the coordinator serialises real traffic, but the pool must
-  // still hand out and take back more than one connection without deadlocking.
+  // Concurrency: the coordinator serialises real traffic, but standalone callers
+  // may overlap. The single-session pool must queue them without deadlocking.
   try {
     const ping = isHana ? 'SELECT 1 AS "N" FROM DUMMY' : 'SELECT 1 AS N';
     const start = Date.now();
