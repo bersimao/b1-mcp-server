@@ -1,16 +1,17 @@
 // ============================================================================
-// DirectDb — local replacement for the sps-sap-interface module.
+// DirectDb — the database driver.
 //
 // Implements the DirectDbModule contract (init / executeQuery / close) directly
-// against @sap/hana-client and mssql, so the server stops inheriting an Express
-// server, an axios Service Layer, a PostgreSQL driver and a stub `https`
-// package for three method calls.
+// against @sap/hana-client and mssql. It replaced the sps-sap-interface
+// dependency, which shipped an Express server, an axios Service Layer, a
+// PostgreSQL driver and a stub `https` package for these three method calls.
 //
-// Behaviour is deliberately a port, not a redesign: the timeout mapping, the
-// {db} placeholder, the ? -> @mssqlboundparmN rewrite and the release-on-error
-// pool discipline all match what was measured against real HANA and MS SQL
-// servers. Three places knowingly differ from the original, each marked below:
-// async HANA connect, quote-aware ? rewriting, and an explicit `encrypt` flag.
+// The behaviour was ported deliberately rather than redesigned: the timeout
+// mapping, the {db} placeholder, the ? -> @mssqlboundparmN rewrite and the
+// release-on-error pool discipline all match what was measured against real
+// HANA and MS SQL servers, so existing profiles kept working unchanged. Three
+// places knowingly differ from the old module, each marked below: async HANA
+// connect, quote-aware ? rewriting, and an explicit `encrypt` flag.
 // ============================================================================
 
 import hanaClient from '@sap/hana-client';

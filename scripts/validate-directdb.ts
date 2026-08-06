@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // ============================================================================
-// Stage 2 validation — runs the SAME checks through sps-sap-interface's
-// DirectDb and through the local src/db/directDb.ts, against a real server, and
-// prints a side-by-side comparison.
+// Driver regression harness — exercises src/db/directDb.ts against a real HANA
+// or MS SQL server. Unit tests mock the drivers, so they pass while the module
+// is broken at runtime (mssql is CJS; a named ESM import typechecks and then
+// throws). This is the check that catches that, and the one to re-run after any
+// @sap/hana-client / mssql / generic-pool bump.
 //
 // Every check is a read-only SELECT. The timeout and pool-poisoning checks are
 // opt-in (--timeouts) because they deliberately hold a session open until the
@@ -12,12 +14,7 @@
 // ============================================================================
 
 import { ConnectionManager } from '../src/config/connectionManager.js';
-
-interface Driver {
-  init(config: Record<string, unknown>): Promise<unknown>;
-  executeQuery(query: string, params?: unknown[]): Promise<unknown>;
-  close(): Promise<void>;
-}
+import { DirectDb } from '../src/db/directDb.js';
 
 interface Check {
   name: string;
@@ -25,6 +22,8 @@ interface Check {
   params?: unknown[];
   /** Reduces a result to a comparable string, so row order/shape noise is out. */
   shape?: (rows: any) => string;
+  /** Exact shaped value this check must produce. Anything else is a failure. */
+  expect?: string;
 }
 
 const rowCount = (rows: any) => `${Array.isArray(rows) ? rows.length : 0} row(s)`;
@@ -55,10 +54,10 @@ function checksFor(isHana: boolean): Check[] {
         params: ['first', 'second'], shape: firstRow,
       },
       {
-        // The regression case: the original rewrote the ? inside the literal.
+        // The regression case: sps-sap-interface rewrote the ? inside the literal.
         name: 'param beside a literal ?',
         query: 'SELECT ? AS "A", \'lit?eral\' AS "B" FROM DUMMY',
-        params: ['bound'], shape: firstRow,
+        params: ['bound'], shape: firstRow, expect: '{"A":"bound","B":"lit?eral"}',
       },
       { name: 'multi-row', query: 'SELECT TOP 3 "TABLE_NAME" FROM "SYS"."TABLES" WHERE "SCHEMA_NAME" = CURRENT_SCHEMA ORDER BY "TABLE_NAME"', shape: rowCount },
     ]
@@ -78,7 +77,7 @@ function checksFor(isHana: boolean): Check[] {
       {
         name: 'param beside a literal ?',
         query: "SELECT ? AS A, 'lit?eral' AS B",
-        params: ['bound'], shape: firstRow,
+        params: ['bound'], shape: firstRow, expect: '{"A":"bound","B":"lit?eral"}',
       },
       { name: 'multi-row', query: 'SELECT TOP 3 TABLE_NAME FROM INFORMATION_SCHEMA.TABLES ORDER BY TABLE_NAME', shape: rowCount },
     ];
@@ -95,23 +94,13 @@ function slowQuery(isHana: boolean): string {
     : "WAITFOR DELAY '00:02:00'";
 }
 
-async function loadDriver(local: boolean): Promise<Driver> {
-  if (local) {
-    const { DirectDb } = await import('../src/db/directDb.js');
-    return new DirectDb() as unknown as Driver;
-  }
-  const mod: any = await import('sps-sap-interface');
-  // CJS package: under the ESM loader the exports may land on `.default`.
-  return (mod.DirectDb || mod.default?.DirectDb) as Driver;
-}
-
 async function runSuite(
-  label: string, local: boolean, profile: any, isHana: boolean, timeouts: boolean,
+  profile: any, isHana: boolean, timeouts: boolean,
 ): Promise<Map<string, string>> {
   const results = new Map<string, string>();
-  console.log(`\n${'='.repeat(70)}\n${label}\n${'='.repeat(70)}`);
+  console.log(`\n${'='.repeat(70)}\nsrc/db/directDb.ts\n${'='.repeat(70)}`);
 
-  const driver = await loadDriver(local);
+  const driver = new DirectDb();
   const databaseType = isHana ? 'HANA' : 'SQL';
 
   try {
@@ -158,7 +147,7 @@ async function runSuite(
   }
 
   if (timeouts) {
-    await runTimeoutChecks(driver, local, profile, isHana, results);
+    await runTimeoutChecks(driver, profile, isHana, results);
   }
 
   try {
@@ -180,7 +169,7 @@ async function runSuite(
  * drop, MS SQL a request cancellation, and both pools stay usable afterwards.
  */
 async function runTimeoutChecks(
-  driver: Driver, local: boolean, profile: any, isHana: boolean, results: Map<string, string>,
+  driver: DirectDb, profile: any, isHana: boolean, results: Map<string, string>,
 ): Promise<void> {
   const POISON = 4;
   const CLEAN = 10;
@@ -239,24 +228,29 @@ async function main(): Promise<void> {
   console.log(`Profile:  ${profile.id} (${profile.dbName} @ ${profile.dbServer}, ${profile.dbType})`);
   console.log(`Timeouts: ${timeouts ? 'ENABLED' : 'skipped (pass --timeouts)'}`);
 
-  const legacy = await runSuite('sps-sap-interface (baseline)', false, profile, isHana, timeouts);
-  const localResults = await runSuite('local src/db/directDb.ts', true, profile, isHana, timeouts);
+  const results = await runSuite(profile, isHana, timeouts);
 
-  console.log(`\n${'='.repeat(70)}\nCOMPARISON\n${'='.repeat(70)}`);
-  const names = new Set([...legacy.keys(), ...localResults.keys()]);
-  let differences = 0;
-  for (const name of names) {
-    const a = legacy.get(name) ?? '(not run)';
-    const b = localResults.get(name) ?? '(not run)';
-    const same = a === b;
-    if (!same) differences++;
-    console.log(`${same ? 'same' : 'DIFF'}  ${name}`);
-    if (!same) {
-      console.log(`        baseline: ${a}`);
-      console.log(`        local:    ${b}`);
+  // Only the checks that carry an `expect` can fail on their own; the rest are
+  // environment-dependent (row counts, timings) and are printed for the human.
+  const failures: string[] = [];
+  for (const [name, value] of results) {
+    if (value.startsWith('FAILED:')) failures.push(`${name}: ${value}`);
+  }
+  for (const check of checksFor(isHana)) {
+    if (!check.expect) continue;
+    const actual = results.get(check.name);
+    if (actual !== check.expect) {
+      failures.push(`${check.name}: expected ${check.expect}, got ${actual}`);
     }
   }
-  console.log(`\n${differences} difference(s).`);
+
+  console.log(`\n${'='.repeat(70)}\nVERDICT\n${'='.repeat(70)}`);
+  if (failures.length === 0) {
+    console.log('all checks passed.');
+    return;
+  }
+  for (const failure of failures) console.log(`FAIL  ${failure}`);
+  process.exitCode = 1;
 }
 
 main().catch(err => {

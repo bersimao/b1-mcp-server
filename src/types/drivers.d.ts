@@ -1,10 +1,11 @@
-// Minimal ambient declarations for the two SAP B1 database drivers.
+// Minimal ambient declarations for the database drivers.
 //
-// Neither @sap/hana-client nor mssql ships TypeScript types, and @types/mssql
-// pulls in the whole tedious surface for the handful of calls we make. This
-// file declares exactly what src/db/directDb.ts uses and nothing else, the same
-// approach the project already took for sps-sap-interface. If a call is not
-// declared here, we do not depend on it.
+// None of @sap/hana-client, mssql or generic-pool ships TypeScript types, and
+// @types/mssql pulls in the whole tedious surface for the handful of calls we
+// make. This file declares exactly what src/db/directDb.ts uses and nothing
+// else: if a call is not declared here, we do not depend on it. Check for
+// bundled types after a driver bump — a package that starts shipping its own
+// would collide with these declarations.
 
 declare module '@sap/hana-client' {
   export interface HanaConnection {

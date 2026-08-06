@@ -38,7 +38,7 @@ const SERVER_VERSION: string = createRequire(import.meta.url)('../package.json')
 /**
  * Creates, initialises, and returns the MCP server.
  *
- * @param directDb - The DirectDb export from sps-sap-interface.
+ * @param directDb - A DirectDb instance (src/db/directDb.ts) or a test double.
  */
 export async function createServer(
   directDb: DirectDbModule,

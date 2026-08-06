@@ -18,7 +18,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`sps-mcp-server` is a Model Context Protocol server that gives an AI client guarded access to SAP Business One via both `DirectDb` (HANA / MS SQL) and the Service Layer OData API. DirectDb comes from `sps-sap-interface`; Service Layer uses the local verified-TLS fetch adapter.
+`sps-mcp-server` is a Model Context Protocol server that gives an AI client guarded access to SAP Business One via both `DirectDb` (HANA / MS SQL) and the Service Layer OData API. Both sides are local: `src/db/directDb.ts` on `@sap/hana-client` + `mssql`, and a verified-TLS `fetch` adapter for the Service Layer.
 
 **Read-only SQL posture:** DirectDb executes only `SELECT` (and anonymous blocks whose statements are all reads); every `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` is blocked. Service Layer allows `GET` and guarded `PATCH`. PATCH requires a directly keyed entity and explicit user acceptance through MCP form elicitation; clients without elicitation support fail closed. SQL writes remain the human's job.
 
@@ -49,6 +49,12 @@ Standalone DirectDb sanity check against a connection profile (no MCP server, ju
 npx tsx scripts/test-connection.ts <profile-id>
 ```
 
+Driver regression harness against a real server — run this after any `@sap/hana-client` / `mssql` / `generic-pool` bump, since the unit tests mock the drivers:
+
+```bash
+npx tsx scripts/validate-directdb.ts <profile-id> [--timeouts]
+```
+
 Pre-publish dry run (verifies the tarball ships only `dist/`, `LICENSE`, `README.md`, `package.json`):
 
 ```bash
@@ -59,7 +65,7 @@ npm pack --dry-run
 
 ### Connection model
 
-`DirectDb` is the singleton exported from `sps-sap-interface`. The local Service Layer adapter deliberately bypasses the dependency's insecure `rejectUnauthorized:false` implementation. Thin wrappers:
+`DirectDb` ([src/db/directDb.ts](src/db/directDb.ts)) is instantiated once in [src/index.ts](src/index.ts) and handed to `createServer`. Thin wrappers:
 
 - [src/db/adapter.ts](src/db/adapter.ts) — `DbAdapter`
 - [src/sl/serviceLayerAdapter.ts](src/sl/serviceLayerAdapter.ts) — strict-by-default TLS `ServiceLayerAdapter` with explicit per-profile certificate pinning compatibility; retains only the session cookie
@@ -75,39 +81,23 @@ Each adapter tracks `dbName` and `dbType` but does **not** retain credentials af
 
 Profile matching (`ConnectionManager.find` in [src/config/connectionManager.ts](src/config/connectionManager.ts)): exact `id` → exact `dbName` → **unique** partial substring match. Ambiguous partials (multiple profiles share the substring) return `undefined` and the tool surfaces the candidate list instead of guessing.
 
-### `sps-sap-interface` call shapes (gotchas)
+### DirectDb ([src/db/directDb.ts](src/db/directDb.ts))
 
-- `DirectDb.executeQuery(query, params?)` — `{db}` is the schema placeholder DirectDb resolves at runtime; `?` is the parameter placeholder. This read-only server only ever issues `SELECT`, so `?` binding always applies. On MS SQL, DirectDb rewrites each `?` to `@mssqlboundparmN` before handing the statement to `mssql`.
-- `DirectDb.init({ …, timeout })` — one value, two meanings: HANA `communicationTimeout`, MS SQL `connectionTimeout` **and** `requestTimeout`. DirectDb's own default is 600 000 ms; `connect_database` overrides it with `config.queryTimeoutMs` (`MCP_QUERY_TIMEOUT_MS`, default 60 s). This is the only cost ceiling in the server — the row cap runs after the DB has already done the work. Both engines were measured killing the statement server-side (`SYS.M_ACTIVE_STATEMENTS` / `sys.dm_exec_requests`), and both pools survive repeated timeouts (12 poisons → 25/25 clean). They differ in how the abort *looks*: MS SQL cancels the request and reports `Timeout: Request failed to complete in Nms`, but **HANA drops the socket**, so a timed-out query surfaces as `Connection down: [89012] Socket recv timeout` with no mention of a timeout at all — don't chase that as a network fault. `hana-client` reconnects transparently, so the next query just works.
-- Service Layer uses native `fetch` for strict TLS and a pinned native HTTPS transport for approved legacy endpoints. Both `/b1s/v1` (OData v3) and `/b1s/v2` (OData v4) profile roots are preserved exactly; the security policy validates only version-neutral relative endpoints. Invalid certificates are inspected without credentials and require MCP form elicitation before their exact fingerprint is saved in the local owner-only trust store. Changed certificates require approval again. Redirects are disabled, requests have fixed timeouts and bounded responses, and pins are checked before login credentials can be transmitted. A 401 requires reconnecting the profile; credentials are not retained for automatic login.
+The database driver, built directly on `@sap/hana-client` + `mssql` + `generic-pool`. It replaced the `sps-sap-interface` dependency, which brought an Express server, an axios Service Layer, a PostgreSQL driver, `system-sleep` and `https@1.0.0` — an npm **stub package**, not Node's built-in — for three method calls, and forced a hand-maintained `overrides` block on every consumer. A clean tarball install now audits at 0 vulnerabilities with no overrides, which `npx` could never achieve before.
 
-### Replacing `sps-sap-interface` (in progress)
+**Behaviour that matters:**
 
-[src/db/directDb.ts](src/db/directDb.ts) is a local implementation of the same `DirectDbModule` contract (`init` / `executeQuery` / `close`) built straight on `@sap/hana-client` + `mssql`. The dependency is worth dropping because it brings an Express server, an axios Service Layer (already replaced), a PostgreSQL driver, `system-sleep`, and `https@1.0.0` — an npm **stub package**, not Node's built-in — for those three calls. Its declared tree carries 15 advisories (9 high), currently neutralised by the hand-maintained `overrides` block in `package.json`; that block is the maintenance burden the swap removes.
+- `executeQuery(query, params?)` — `{db}` is the schema placeholder resolved at runtime; `?` is the parameter placeholder. This read-only server only ever issues `SELECT`, so `?` binding always applies. On MS SQL each `?` is rewritten to `@mssqlboundparmN` before the statement reaches `mssql` — quote-aware, via `blankQuotedSpans()` from the guardrail parser, so a `?` inside a literal (`WHERE Comments = 'why?'`) stays a `?`. A placeholder/value count mismatch throws instead of binding wrong.
+- `init({ …, timeout })` — one value, two meanings: HANA `communicationTimeout`, MS SQL `connectionTimeout` **and** `requestTimeout`. Default 600 000 ms; `connect_database` overrides it with `config.queryTimeoutMs` (`MCP_QUERY_TIMEOUT_MS`, default 60 s). This is the only cost ceiling in the server — the row cap runs after the DB has already done the work. Both engines were measured killing the statement server-side (`SYS.M_ACTIVE_STATEMENTS` / `sys.dm_exec_requests`), and both pools survive repeated timeouts (12 poisons → 25/25 clean). They differ in how the abort *looks*: MS SQL cancels the request and reports `Timeout: Request failed to complete in Nms`, but **HANA drops the socket**, so a timed-out query surfaces as `Connection down: [89012] Socket recv timeout` with no mention of a timeout at all — don't chase that as a network fault. `hana-client` reconnects transparently, so the next query just works.
+- HANA connects through the **callback** overload of `client.connect`. The synchronous overload blocks the event loop for the whole handshake and login — measured at 279 ms of dead event loop per `init` (5 minimum pool connections), now 2 ms.
+- The HANA pool releases the connection **on the error path too**. That is what lets it survive a poisoned query instead of leaking a slot per timeout.
+- **`encrypt: false` is pinned explicitly for MS SQL.** `mssql@6` defaulted to no encryption and every on-prem SAP B1 profile was configured against that; `mssql@11` flips the default to `true`. Pinning it stops a driver bump from silently breaking every profile. Turning it on properly needs a per-profile opt-in and a certificate story, like the Service Layer adapter has.
 
-**Set `MCP_LOCAL_DIRECTDB=true` to select it.** Default is still `sps-sap-interface`, so nothing changes until you opt in. Both [src/index.ts](src/index.ts) and [scripts/test-connection.ts](scripts/test-connection.ts) honour the flag, so the same profile can be run through both implementations and compared.
+**Re-validate after any driver bump.** [scripts/validate-directdb.ts](scripts/validate-directdb.ts) runs the read-only checks plus the timeout / pool-poisoning behaviour against a real server (`npx tsx scripts/validate-directdb.ts <profile-id> [--timeouts]`; `--timeouts` is opt-in because it holds a session open until the server kills the statement). Mocked unit tests cannot catch driver breakage — all three drivers are CommonJS, so `import { ConnectionPool } from 'mssql'` typechecks and then throws at runtime, and 427 green tests said nothing about it. Last run on `mssql@11.0.1` / `@sap/hana-client@2.29.25`: all checks passed on HANA (`hana_profile`) and MS SQL (`mssql_profile`), timeout shape and pool recovery unchanged from the values documented above.
 
-The port is deliberate, not a redesign. Three places knowingly differ:
+### Service Layer
 
-1. **Async HANA connect.** The original called `client.connect(params)` with no callback — the blocking overload, which stalls the event loop for the whole handshake and login.
-2. **Quote-aware `?` rewriting.** The original ran `while (/\?/.test(q)) q.replace("?", …)` over raw text, so `WHERE Comments = 'why?'` had its literal rewritten into a parameter reference. Ours reuses `blankQuotedSpans()` from the guardrail parser, which preserves offsets.
-3. **Explicit `encrypt: false` for MS SQL.** `mssql@6` defaulted to no encryption and every on-prem profile was configured against that; `mssql@11` flips the default to `true`. Pinning it here stops a driver upgrade from silently breaking every profile. Turning it on properly needs a per-profile opt-in and a certificate story, like the Service Layer adapter has.
-
-**Validated against real servers** with [scripts/validate-directdb.ts](scripts/validate-directdb.ts), which runs the same read-only checks through both implementations and diffs the results (`npx tsx scripts/validate-directdb.ts <profile-id> [--timeouts]`; `--timeouts` is opt-in because it holds a session open until the server kills the statement):
-
-| | HANA (`hana_profile`) | MS SQL (`mssql_profile`) |
-|---|---|---|
-| Functional checks | 0 differences | 0 differences |
-| Timeout error shape | identical — `Connection down: [89012] Socket recv timeout` | identical — `Timeout: Request failed to complete in 5000ms` |
-| Pool recovery | 10/10 clean after 4 poisons, both | 10/10 clean after 4 poisons, both |
-| `?` inside a literal | same (HANA binds natively) | **differs, as intended** — baseline returns `lit@mssqlboundparm1eral`, local returns `lit?eral` |
-
-So the documented timeout asymmetry survives the new pool on both engines, and the only behavioural difference is the placeholder bug being fixed. Note `init` also stops blocking: 279 ms → 2 ms on HANA, because the original opens its 5 minimum pool connections with the synchronous connect overload.
-
-**Still to do before the dependency can go:**
-
-- Add `@sap/hana-client`, `mssql` and `generic-pool` as **direct** dependencies. They are currently satisfied transitively through `sps-sap-interface`, which is fragile — a hoist change breaks the local driver. Deferred deliberately: declaring `mssql` at top level while the old dependency still pins `6.3.1` would install two copies, and the `uuid` override is scoped to `sps-sap-interface` so a top-level `mssql@6` would arrive unpatched. Do this together with the `mssql` 6 → 11 bump, which is where the advisory cleanup actually lands.
-- Then: delete `src/types/sps-sap-interface.d.ts`, drop the `overrides` block, remove the `MCP_LOCAL_DIRECTDB` switch, and fold the gotchas above into this section as our own behaviour.
+Uses native `fetch` for strict TLS and a pinned native HTTPS transport for approved legacy endpoints. Both `/b1s/v1` (OData v3) and `/b1s/v2` (OData v4) profile roots are preserved exactly; the security policy validates only version-neutral relative endpoints. Invalid certificates are inspected without credentials and require MCP form elicitation before their exact fingerprint is saved in the local owner-only trust store. Changed certificates require approval again. Redirects are disabled, requests have fixed timeouts and bounded responses, and pins are checked before login credentials can be transmitted. A 401 requires reconnecting the profile; credentials are not retained for automatic login.
 
 ### MCP tools
 
@@ -162,10 +152,12 @@ Always blocked in raw SQL regardless: `EXEC` / `EXECUTE` / `CALL`, `CREATE` / `A
 
 ```
 src/
-  index.ts            entry, imports DirectDb/ServiceLayer, bootstraps
+  index.ts            entry, constructs DirectDb, bootstraps
   server.ts           factory: registers all tools, shares adapters
   config/             settings + connection-profile loader
-  db/, sl/            adapters around DirectDb / ServiceLayer
+  db/                 directDb.ts (the driver) + adapter.ts (wrapper)
+  sl/                 strict-TLS Service Layer adapter
+  types/drivers.d.ts  minimal ambient types for the three CJS drivers
   tools/              one file per MCP tool
   guardrails/         parser, table classifier, per-op rules (index.ts = read-only gate)
   sanitisation/       input validator (length / null-byte pre-checks)
@@ -173,7 +165,8 @@ src/
   logging/            JSON Lines audit logger
 tests/                mirrors src/ — vitest, every guardrail rule covered
 scripts/
-  test-connection.ts  standalone DirectDb sanity check (takes profile id)
+  test-connection.ts     standalone DirectDb sanity check (takes profile id)
+  validate-directdb.ts   real-server driver regression harness
 ```
 
 ## Design principles
@@ -188,4 +181,4 @@ scripts/
 
 ## Tech stack
 
-Node ≥18, TypeScript ES2022 with Node16 modules. Dependencies: `@modelcontextprotocol/sdk` (stdio transport), `zod` (tool schema validation), `sps-sap-interface` (DirectDb + ServiceLayer). Tests via `vitest`.
+Node ≥18, TypeScript ES2022 with Node16 modules. Dependencies: `@modelcontextprotocol/sdk` (stdio transport), `zod` (tool schema validation), `@sap/hana-client` + `mssql` + `generic-pool` (DirectDb). Tests via `vitest`.

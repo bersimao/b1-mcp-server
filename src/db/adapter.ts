@@ -2,13 +2,13 @@
 // sps-mcp-server — Database Adapter
 // ============================================================================
 //
-// Thin wrapper around the sps-sap-interface DirectDb module.
+// Thin wrapper around the DirectDb module in src/db/directDb.ts.
 //
-// Actual API (from npm docs):
+// API:
 //
-//   const { DirectDb } = require("sps-sap-interface");
+//   const directDb = new DirectDb();
 //
-//   await DirectDb.init({
+//   await directDb.init({
 //     server: "192.168.0.1:30015",
 //     database: "SBO_DEMO_HANA",
 //     databaseType: 'HANA',  // or 'SQL'
@@ -18,7 +18,7 @@
 //
 //   // Returns a client. Only re-call init() if connection is lost.
 //
-//   const rows = await DirectDb.executeQuery(
+//   const rows = await directDb.executeQuery(
 //     `SELECT TOP 10 * FROM {db}.OITM WHERE "ItmsGrpCod" > ? AND "ItemName" LIKE ?`,
 //     [1, "%A%"]
 //   );
@@ -32,7 +32,7 @@
 import { DbType, FieldValue } from '../types/index.js';
 
 // ---------------------------------------------------------------------------
-// Interface matching the actual sps-sap-interface DirectDb module
+// Contract implemented by src/db/directDb.ts (and by the test doubles)
 // ---------------------------------------------------------------------------
 
 export interface DirectDbInitConfig {

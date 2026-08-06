@@ -8,6 +8,7 @@
 // ============================================================================
 
 import { ConnectionManager } from '../src/config/connectionManager.js';
+import { DirectDb } from '../src/db/directDb.js';
 
 async function main() {
   console.log('=== sps-mcp-server Connection Test ===\n');
@@ -45,39 +46,20 @@ async function main() {
     process.exit(1);
   }
 
-  // 2. Import DirectDb — MCP_LOCAL_DIRECTDB=true picks the local driver, so the
-  //    same profile can be run through both implementations and compared.
-  let DirectDb: any;
-  if (process.env.MCP_LOCAL_DIRECTDB === 'true') {
-    const { DirectDb: LocalDirectDb } = await import('../src/db/directDb.js');
-    DirectDb = new LocalDirectDb();
-    console.log('✅ local DirectDb driver loaded (MCP_LOCAL_DIRECTDB=true)\n');
-  } else {
-    console.log('Importing sps-sap-interface...');
-    try {
-      const spsModule = await import('sps-sap-interface');
-      DirectDb = spsModule.DirectDb || (spsModule as any).default?.DirectDb;
-      if (!DirectDb) throw new Error('DirectDb not found in exports');
-      console.log('✅ sps-sap-interface loaded\n');
-    } catch (err) {
-      console.error(`❌ Failed to import sps-sap-interface: ${err instanceof Error ? err.message : err}`);
-      process.exit(1);
-    }
-  }
-
-  // 3. Init connection
+  // 2. Init connection
+  const directDb = new DirectDb();
   console.log('Connecting to database...');
   const databaseType = dbType === 'hana' ? 'HANA' : 'SQL';
 
   try {
-    await DirectDb.init({ server: dbServer, database: dbName, databaseType, username: dbUser, password: dbPassword });
+    await directDb.init({ server: dbServer, database: dbName, databaseType, username: dbUser, password: dbPassword });
     console.log('✅ DirectDb.init() succeeded\n');
   } catch (err) {
     console.error(`❌ DirectDb.init() failed: ${err instanceof Error ? err.message : err}`);
     process.exit(1);
   }
 
-  // 4. Ping query
+  // 3. Ping query
   const pingQuery = dbType === 'hana'
     ? 'SELECT CURRENT_DATE FROM DUMMY'
     : 'SELECT GETDATE()';
@@ -86,7 +68,7 @@ async function main() {
   const start = Date.now();
 
   try {
-    const result = await DirectDb.executeQuery(pingQuery);
+    const result = await directDb.executeQuery(pingQuery);
     const elapsed = Date.now() - start;
     console.log(`✅ Ping succeeded in ${elapsed}ms`);
     console.log(`   Result: ${JSON.stringify(result)}\n`);
@@ -96,14 +78,14 @@ async function main() {
     process.exit(1);
   }
 
-  // 5. Quick schema test
+  // 4. Quick schema test
   const schemaQuery = dbType === 'hana'
     ? 'SELECT COUNT(*) AS "TableCount" FROM "SYS"."TABLES" WHERE "SCHEMA_NAME" = CURRENT_SCHEMA'
     : `SELECT COUNT(*) AS TableCount FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_CATALOG = '${dbName}'`;
 
   console.log(`Counting tables: ${schemaQuery}`);
   try {
-    const result = await DirectDb.executeQuery(schemaQuery);
+    const result = await directDb.executeQuery(schemaQuery);
     console.log(`✅ Found ${JSON.stringify(result)} tables in ${dbName}\n`);
   } catch (err) {
     console.error(`⚠️  Schema query failed (non-fatal): ${err instanceof Error ? err.message : err}\n`);
