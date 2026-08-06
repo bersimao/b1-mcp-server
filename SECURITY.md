@@ -157,7 +157,7 @@ Stated explicitly, because a security document that omits them is worse than non
 
 Both engines were measured against real servers, with a CPU-only query calibrated to outlast the ceiling. In each case the statement was confirmed gone from the engine's own running-request view well before its work would have finished — so it is genuinely killed, not merely abandoned by the client:
 
-| | HANA (`SBO_HANA_DEV`, `hana-client` 2.21) | MS SQL (`SBO_MSSQL_DEV`, `mssql` 6.3 / `tedious`) |
+| | HANA (`hana-client` 2.21) | MS SQL (`mssql` 6.3 / `tedious`) |
 |---|---|---|
 | Ceiling maps to | `communicationTimeout` | `connectionTimeout` + `requestTimeout` |
 | ~20 s query, ceiling | aborted at 2 s | aborted at 3 s |
@@ -167,6 +167,8 @@ Both engines were measured against real servers, with a CPU-only query calibrate
 | Pool after 12 timeouts | 25/25 clean — `hana-client` silently reconnects | 25/25 clean — connection stays usable |
 
 The HANA error text is the trap: an aborted query reports a dead connection, with no hint that a timeout caused it. MS SQL says plainly what happened.
+
+Those figures come from the original measurement on `hana-client` 2.21 / `mssql` 6.3. Both rows were re-confirmed on `@sap/hana-client` 2.29.25 / `mssql` 11.0.1 after the driver swap — same error strings, same clean pool recovery.
 
 **Still open:** the ceiling is wall-clock, not cost. A cartesian product still gets the full 60 s of production CPU before it is cut; a true cost governor (`QUERY_GOVERNOR_COST_LIMIT`, HANA workload classes) would reject it on the optimiser's estimate, before execution.
 7. **The parser is not a full SQL parser.** It is a deliberately small classifier that denies by default. Its correctness rests on the quote/comment scanners; any change there must keep `tests/guardrails/quotedSpanEvasion.test.ts` green.
