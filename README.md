@@ -176,6 +176,30 @@ or remotely hosted credential broker. See the
 
 All optional.
 
+**There is no `.env` file.** The server reads `process.env` directly and never
+loads a dotenv file, so dropping a `.env` next to it does nothing. For a stdio
+MCP server the client owns the environment — set variables in the `env` block of
+your MCP configuration, which the client passes to the spawned process:
+
+```json
+{
+  "mcpServers": {
+    "sps-db": {
+      "command": "npx",
+      "args": ["-y", "b1-mcp-server"],
+      "env": {
+        "MCP_QUERY_TIMEOUT_MS": "120000",
+        "MCP_SL_PATCH_ENABLED": "false"
+      }
+    }
+  }
+}
+```
+
+Credentials are **not** configured this way — they live only in
+`connections.json`, which is resolved from your home directory and therefore
+found regardless of where `npx` runs from.
+
 | Variable | Default | Purpose |
 |---|---|---|
 | `MCP_CONNECTIONS_FILE` | `~/.claude/connections.json` | Path to profile file |
