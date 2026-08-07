@@ -62,10 +62,40 @@ async function resolveServiceLayerTls(
   // New SNI configuration belongs to the connection profile, not the trust pin.
   const legacyServerName = trusted?.serverName;
   const sniName = profile.slTlsServerName || legacyServerName;
-  const inspection = await inspectServiceLayerCertificate(profile.slUrl!, config.slTimeoutMs, sniName);
+  let inspection: ServiceLayerCertificateInspection;
+  let inspectedWithLegacySni = false;
+
+  // First reproduce the transport the profile itself requests. Without an
+  // explicit profile SNI this is also the real strict transport, so a site that
+  // reissued its certificate correctly can leave pinned mode automatically.
+  try {
+    inspection = await inspectServiceLayerCertificate(
+      profile.slUrl!, config.slTimeoutMs, profile.slTlsServerName,
+    );
+  } catch (error) {
+    // Some virtual hosts reject a handshake that omits their historical SNI.
+    // The legacy value remains a credential-free compatibility route for the
+    // pinned transport, so try it before declaring the endpoint unreachable.
+    if (profile.slTlsServerName || !legacyServerName) throw error;
+    inspection = await inspectServiceLayerCertificate(
+      profile.slUrl!, config.slTimeoutMs, legacyServerName,
+    );
+    inspectedWithLegacySni = true;
+  }
 
   if (inspection.strictTlsValid) {
     return { trustAction: 'strict' };
+  }
+
+  // A non-strict default inspection cannot be compared with a pin that the
+  // agent will present under a different legacy SNI: virtual hosts may serve a
+  // different certificate for each name. Reinspect with the exact routing the
+  // pinned login will use so approval, fingerprint comparison and login all see
+  // the same certificate.
+  if (!profile.slTlsServerName && legacyServerName && !inspectedWithLegacySni) {
+    inspection = await inspectServiceLayerCertificate(
+      profile.slUrl!, config.slTimeoutMs, legacyServerName,
+    );
   }
 
   // Backward-compatible one-time migration: a manually configured pin was

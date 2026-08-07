@@ -90,6 +90,22 @@ export function canonicalServiceLayerOrigin(rawUrl: string): string {
   return `${url.protocol}//${url.hostname.toLowerCase()}:${url.port || '443'}`;
 }
 
+/**
+ * Whether the strict transport can honour the SNI this inspection socket used.
+ * Strict mode is native `fetch`, which always sends the URL host as SNI and
+ * offers no override, so a profile asking for a different one cannot be served
+ * strictly — whatever certificate this inspection happened to observe would not
+ * be the certificate the real request receives. Exported because it is only
+ * reachable in production behind a CA-signed certificate, which no offline test
+ * can present.
+ */
+export function strictTransportCanReuseSni(
+  explicitSniName: string | undefined,
+  defaultSniName: string | undefined,
+): boolean {
+  return !explicitSniName || explicitSniName.toLowerCase() === defaultSniName?.toLowerCase();
+}
+
 export function inspectServiceLayerCertificate(
   rawUrl: string,
   timeoutMs: number,
@@ -122,11 +138,10 @@ export function inspectServiceLayerCertificate(
         // SNI chooses which certificate is presented; it is not the identity
         // assertion. Strict HTTPS authenticates the host written in the URL.
         const identityError = checkServerIdentity(targetHost, certificate);
-        const strictTransportCanReuseSni = !explicitSniName ||
-          explicitSniName.toLowerCase() === defaultSniName?.toLowerCase();
+        const canReuseSni = strictTransportCanReuseSni(explicitSniName, defaultSniName);
         const authorizationError = socket.authorizationError?.message || socket.authorizationError;
         const tlsError = identityError?.message || authorizationError ||
-          (!strictTransportCanReuseSni
+          (!canReuseSni
             ? 'A custom TLS SNI name is configured, so this connection requires pinned TLS.'
             : undefined);
         resolve({
@@ -136,7 +151,7 @@ export function inspectServiceLayerCertificate(
           issuer: safeCertificateDetail(certificate.issuer),
           validFrom: safeCertificateDetail(certificate.valid_from),
           validTo: safeCertificateDetail(certificate.valid_to),
-          strictTlsValid: strictTransportCanReuseSni && socket.authorized && !identityError,
+          strictTlsValid: canReuseSni && socket.authorized && !identityError,
           tlsError: tlsError ? safeCertificateDetail(tlsError) : undefined,
           serverName: explicitSniName,
         });
@@ -178,13 +193,14 @@ class PinnedHttpsAgent extends Agent {
     });
 
     let settled = false;
+    let handshakeTimer: NodeJS.Timeout | undefined;
     const finish = (error: Error | null, stream?: TLSSocket): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(handshakeTimer);
+      if (handshakeTimer) clearTimeout(handshakeTimer);
       callback(error, stream);
     };
-    const handshakeTimer = setTimeout(() => {
+    handshakeTimer = setTimeout(() => {
       const error = new Error(`Service Layer TLS handshake timed out after ${this.handshakeTimeoutMs}ms.`);
       finish(error);
       socket.destroy(error);

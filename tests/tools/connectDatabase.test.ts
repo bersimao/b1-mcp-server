@@ -379,6 +379,117 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(sendRequest).not.toHaveBeenCalled();
   });
 
+  // A legacy trust record carries `serverName` from the era when SNI doubled as
+  // certificate identity. It still routes the pinned agent, but the strict
+  // transport never sends it, so it must not decide whether strict TLS is
+  // possible: a site that reissued its certificate correctly would otherwise
+  // stay pinned forever and be asked to approve a certificate standard TLS
+  // already accepts.
+  it('ignores a legacy trust-store SNI when deciding whether strict TLS applies', async () => {
+    const ctx = setup();
+    new ServiceLayerTrustStore(ctx.trustFile).approve('https://sap.example.com:50000', {
+      certificateSha256: 'OLD:PIN', serverName: 'sap-internal',
+      subject: '{"CN":"sap-internal"}', issuer: '{}', validFrom: 'now', validTo: 'later',
+    });
+    writeProfiles(ctx.connectionsFile, [{
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+      dbServer: 'db:30015', dbUser: 'db-user', dbPassword: 'db-secret',
+      slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+    }]);
+    // The certificate was reissued properly and now passes standard TLS.
+    inspectCertificate.mockResolvedValue({
+      origin: 'https://sap.example.com:50000', certificateSha256: 'NEW:PIN',
+      subject: '{"CN":"sap.example.com"}', issuer: '{"CN":"Real CA"}',
+      validFrom: 'now', validTo: 'later', strictTlsValid: true,
+    });
+    const sendRequest = vi.fn();
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest });
+
+    expect(result.isError).toBeFalsy();
+    // The legacy name must never reach the inspection, or strict is ruled out.
+    expect(inspectCertificate).toHaveBeenCalledWith(
+      'https://sap.example.com:50000/b1s/v2', expect.any(Number), undefined,
+    );
+    expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({
+      tlsMode: undefined, certificateSha256: undefined,
+    }));
+    expect(sendRequest).not.toHaveBeenCalled();
+  });
+
+  it('reinspects with legacy SNI before matching a pin used by the pinned agent', async () => {
+    const ctx = setup();
+    new ServiceLayerTrustStore(ctx.trustFile).approve('https://sap.example.com:50000', {
+      certificateSha256: 'PINNED:CERT', serverName: 'sap-internal',
+      subject: '{"CN":"sap-internal"}', issuer: '{}', validFrom: 'now', validTo: 'later',
+    });
+    writeProfiles(ctx.connectionsFile, [{
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+      dbServer: 'db:30015', dbUser: 'db-user', dbPassword: 'db-secret',
+      slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+    }]);
+    inspectCertificate
+      // The default virtual host serves another, still-untrusted certificate.
+      .mockResolvedValueOnce({
+        origin: 'https://sap.example.com:50000', certificateSha256: 'DEFAULT:CERT',
+        subject: '{"CN":"default"}', issuer: '{}', validFrom: 'now', validTo: 'later',
+        strictTlsValid: false, tlsError: 'self-signed certificate',
+      })
+      // The legacy SNI serves the certificate that was actually approved.
+      .mockResolvedValueOnce({
+        origin: 'https://sap.example.com:50000', certificateSha256: 'PINNED:CERT',
+        subject: '{"CN":"sap-internal"}', issuer: '{}', validFrom: 'now', validTo: 'later',
+        strictTlsValid: false, tlsError: 'self-signed certificate', serverName: 'sap-internal',
+      });
+    const sendRequest = vi.fn();
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest });
+
+    expect(result.isError).toBeFalsy();
+    expect(inspectCertificate).toHaveBeenNthCalledWith(
+      1, 'https://sap.example.com:50000/b1s/v2', expect.any(Number), undefined,
+    );
+    expect(inspectCertificate).toHaveBeenNthCalledWith(
+      2, 'https://sap.example.com:50000/b1s/v2', expect.any(Number), 'sap-internal',
+    );
+    expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({
+      tlsMode: 'pinned', tlsServerName: 'sap-internal', certificateSha256: 'PINNED:CERT',
+    }));
+    expect(sendRequest).not.toHaveBeenCalled();
+  });
+
+  it('falls back to legacy SNI when the default TLS handshake is rejected', async () => {
+    const ctx = setup();
+    new ServiceLayerTrustStore(ctx.trustFile).approve('https://sap.example.com:50000', {
+      certificateSha256: 'PINNED:CERT', serverName: 'sap-internal',
+      subject: '{"CN":"sap-internal"}', issuer: '{}', validFrom: 'now', validTo: 'later',
+    });
+    writeProfiles(ctx.connectionsFile, [{
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+      dbServer: 'db:30015', dbUser: 'db-user', dbPassword: 'db-secret',
+      slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+    }]);
+    inspectCertificate
+      .mockRejectedValueOnce(new Error('unrecognized_name'))
+      .mockResolvedValueOnce({
+        origin: 'https://sap.example.com:50000', certificateSha256: 'PINNED:CERT',
+        subject: '{"CN":"sap-internal"}', issuer: '{}', validFrom: 'now', validTo: 'later',
+        strictTlsValid: false, tlsError: 'self-signed certificate', serverName: 'sap-internal',
+      });
+    const sendRequest = vi.fn();
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest });
+
+    expect(result.isError).toBeFalsy();
+    expect(inspectCertificate).toHaveBeenNthCalledWith(
+      2, 'https://sap.example.com:50000/b1s/v2', expect.any(Number), 'sap-internal',
+    );
+    expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({
+      tlsMode: 'pinned', tlsServerName: 'sap-internal', certificateSha256: 'PINNED:CERT',
+    }));
+    expect(sendRequest).not.toHaveBeenCalled();
+  });
+
   it('ends a foreign DirectDb pool even when the target profile has no DB side', async () => {
     // The invariant behind per-side teardown: a stale side is torn down whether
     // or not the incoming profile configures it. Here nothing would ever

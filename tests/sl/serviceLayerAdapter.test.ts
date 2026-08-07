@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   canonicalServiceLayerOrigin,
   ServiceLayerAdapter,
+  strictTransportCanReuseSni,
 } from '../../src/sl/serviceLayerAdapter.js';
 
 const loginResponse = () => new Response('', {
@@ -19,6 +20,29 @@ describe('ServiceLayerAdapter secure transport', () => {
   it('keeps IPv6 brackets in canonical origins used as trust-store keys', () => {
     expect(canonicalServiceLayerOrigin('https://[2001:DB8::1]:50000/b1s/v1'))
       .toBe('https://[2001:db8::1]:50000');
+  });
+
+  // Strict mode is native fetch: it always sends the URL host as SNI and takes
+  // no override. A profile needing a different SNI must therefore be forced to
+  // pinned, or the inspection would bless a certificate the real request never
+  // sees. Tested directly: the live path only reaches this decision behind a
+  // CA-signed certificate, which an offline test cannot present.
+  describe('strict transport SNI reuse', () => {
+    it('reuses SNI when the profile configures none', () => {
+      expect(strictTransportCanReuseSni(undefined, 'sap.example.com')).toBe(true);
+    });
+
+    it('reuses SNI when the configured name only differs in case', () => {
+      expect(strictTransportCanReuseSni('SAP.example.COM', 'sap.example.com')).toBe(true);
+    });
+
+    it('refuses reuse when the configured SNI differs from the URL host', () => {
+      expect(strictTransportCanReuseSni('sap-internal', 'sap.example.com')).toBe(false);
+    });
+
+    it('refuses reuse when the URL is an IP, which sends no SNI at all', () => {
+      expect(strictTransportCanReuseSni('sap-internal', undefined)).toBe(false);
+    });
   });
 
   it('refuses the Node global TLS-disable escape hatch', async () => {
