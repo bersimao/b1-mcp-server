@@ -56,16 +56,30 @@ function validateFingerprint(value: string): string {
   return normalized;
 }
 
-function validateServerName(value: string | undefined): string | undefined {
+/** WHATWG URL keeps brackets around IPv6 hostnames; socket APIs do not. */
+function networkHost(value: string): string {
+  return value.startsWith('[') && value.endsWith(']') ? value.slice(1, -1) : value;
+}
+
+function normalizeSniName(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   const normalized = value.trim();
-  if (!normalized || /[/:\\\s]/.test(normalized)) {
-    throw new Error('slTlsServerName must be a DNS name or IP address without a protocol, port, path, or whitespace.');
+  if (!normalized) {
+    throw new Error('slTlsServerName must be a DNS name without a protocol, port, path, or whitespace.');
+  }
+  // IP literals are valid Service Layer URL hosts, but RFC 6066 SNI carries a
+  // DNS hostname. Accept a legacy IP-valued override as a no-op so existing
+  // profiles keep working without asking Node to send an invalid SNI value.
+  if (isIP(networkHost(normalized))) return undefined;
+  if (/[/:\\\s]/.test(normalized)) {
+    throw new Error('slTlsServerName must be a DNS name without a protocol, port, path, or whitespace.');
   }
   return normalized;
 }
 
-function safeCertificateName(value: unknown): string {
+/** Certificate metadata is remote-controlled: strip control characters and clamp
+ *  it before it reaches an approval screen, a tool response or the audit log. */
+export function safeCertificateDetail(value: unknown): string {
   const text = typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value ?? '');
   return text.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 1_000);
 }
@@ -83,16 +97,17 @@ export function inspectServiceLayerCertificate(
 ): Promise<ServiceLayerCertificateInspection> {
   const url = new URL(rawUrl);
   if (url.protocol !== 'https:') return Promise.reject(new Error('Service Layer URL must use HTTPS.'));
-  const targetHost = url.hostname;
+  const targetHost = networkHost(url.hostname);
   const targetPort = Number(url.port || 443);
-  const explicitServerName = validateServerName(configuredServerName);
-  const serverName = explicitServerName || (isIP(targetHost) ? undefined : targetHost);
+  const explicitSniName = normalizeSniName(configuredServerName);
+  const defaultSniName = isIP(targetHost) ? undefined : targetHost;
+  const sniName = explicitSniName || defaultSniName;
 
   return new Promise((resolve, reject) => {
     const socket = tlsConnect({
       host: targetHost,
       port: targetPort,
-      servername: serverName,
+      servername: sniName,
       rejectUnauthorized: false,
     });
     const timer = setTimeout(() => socket.destroy(new Error(`TLS inspection timed out after ${timeoutMs}ms`)), timeoutMs);
@@ -104,19 +119,26 @@ export function inspectServiceLayerCertificate(
           throw new Error('Service Layer did not present a peer certificate.');
         }
 
-        const identityName = explicitServerName || targetHost;
-        const identityError = checkServerIdentity(identityName, certificate);
-        const tlsError = identityError?.message || socket.authorizationError?.message || socket.authorizationError;
+        // SNI chooses which certificate is presented; it is not the identity
+        // assertion. Strict HTTPS authenticates the host written in the URL.
+        const identityError = checkServerIdentity(targetHost, certificate);
+        const strictTransportCanReuseSni = !explicitSniName ||
+          explicitSniName.toLowerCase() === defaultSniName?.toLowerCase();
+        const authorizationError = socket.authorizationError?.message || socket.authorizationError;
+        const tlsError = identityError?.message || authorizationError ||
+          (!strictTransportCanReuseSni
+            ? 'A custom TLS SNI name is configured, so this connection requires pinned TLS.'
+            : undefined);
         resolve({
           origin: canonicalServiceLayerOrigin(rawUrl),
           certificateSha256: certificate.fingerprint256.toUpperCase(),
-          subject: safeCertificateName(certificate.subject),
-          issuer: safeCertificateName(certificate.issuer),
-          validFrom: String(certificate.valid_from || ''),
-          validTo: String(certificate.valid_to || ''),
-          strictTlsValid: socket.authorized && !identityError,
-          tlsError: tlsError ? String(tlsError) : undefined,
-          serverName: explicitServerName,
+          subject: safeCertificateDetail(certificate.subject),
+          issuer: safeCertificateDetail(certificate.issuer),
+          validFrom: safeCertificateDetail(certificate.valid_from),
+          validTo: safeCertificateDetail(certificate.valid_to),
+          strictTlsValid: strictTransportCanReuseSni && socket.authorized && !identityError,
+          tlsError: tlsError ? safeCertificateDetail(tlsError) : undefined,
+          serverName: explicitSniName,
         });
         socket.end();
       } catch (error) {
@@ -134,7 +156,10 @@ class PinnedHttpsAgent extends Agent {
     private readonly targetHost: string,
     private readonly targetPort: number,
     private readonly fingerprintSha256: string,
-    private readonly identityName?: string,
+    /** SNI name sent in the handshake so the server can select a certificate.
+     *  Not an identity assertion — the pin decides which certificate is accepted. */
+    private readonly sniName?: string,
+    private readonly handshakeTimeoutMs = 30_000,
   ) {
     super({ keepAlive: false, maxSockets: 1 });
   }
@@ -142,8 +167,8 @@ class PinnedHttpsAgent extends Agent {
   override createConnection(
     options: ConnectionOptions,
     callback: (err: Error | null, stream?: Duplex) => void,
-  ): Duplex {
-    const servername = this.identityName || (isIP(this.targetHost) ? undefined : this.targetHost);
+  ): Duplex | null | undefined {
+    const servername = this.sniName || (isIP(this.targetHost) ? undefined : this.targetHost);
     const socket = tlsConnect({
       ...options,
       host: this.targetHost,
@@ -156,8 +181,14 @@ class PinnedHttpsAgent extends Agent {
     const finish = (error: Error | null, stream?: TLSSocket): void => {
       if (settled) return;
       settled = true;
+      clearTimeout(handshakeTimer);
       callback(error, stream);
     };
+    const handshakeTimer = setTimeout(() => {
+      const error = new Error(`Service Layer TLS handshake timed out after ${this.handshakeTimeoutMs}ms.`);
+      finish(error);
+      socket.destroy(error);
+    }, this.handshakeTimeoutMs);
 
     socket.once('secureConnect', () => {
       try {
@@ -166,19 +197,21 @@ class PinnedHttpsAgent extends Agent {
           throw new Error('Service Layer did not present a peer certificate.');
         }
 
+        // The pin IS the identity. After an origin-bound human approval it
+        // names one exact certificate, which is more specific than name
+        // matching — whoever presents this certificate holds its private key,
+        // and the names written inside it do not change that. Name checking is
+        // deliberately NOT repeated here: B1 ships a self-signed Service Layer
+        // certificate issued to the machine's short name, while clients connect
+        // by FQDN, so re-checking the name rejected an already-approved
+        // certificate with no way out through the interface.
         const actualFingerprint = normalizeFingerprint(certificate.fingerprint256);
         if (actualFingerprint !== this.fingerprintSha256) {
-          throw new Error('Service Layer TLS certificate fingerprint does not match the configured SHA-256 pin.');
-        }
-
-        // DNS URLs validate their DNS identity automatically. IP URLs can
-        // supply slTlsServerName when the certificate names a DNS host instead.
-        const identityName = this.identityName || (isIP(this.targetHost) ? undefined : this.targetHost);
-        if (identityName) {
-          const identityError = checkServerIdentity(identityName, certificate);
-          if (identityError) {
-            throw new Error(`Service Layer TLS identity validation failed for ${identityName}.`);
-          }
+          throw new Error(
+            'Service Layer TLS certificate does not match the approved SHA-256 pin for this origin. ' +
+            `Approved: ${this.fingerprintSha256}. Presented: ${actualFingerprint}. ` +
+            'If the server certificate was legitimately replaced, reconnect the profile to review and approve the new one.',
+          );
         }
 
         finish(null, socket);
@@ -189,7 +222,14 @@ class PinnedHttpsAgent extends Agent {
       }
     });
     socket.once('error', error => finish(error));
-    return socket;
+    socket.once('close', () => {
+      if (!settled) finish(new Error('Service Layer TLS connection closed before certificate validation completed.'));
+    });
+
+    // Returning a socket would make https.Agent hand it to the request
+    // immediately. Keep it private until secureConnect verifies the pin so
+    // login credentials cannot even be queued on an unauthenticated socket.
+    return undefined;
   }
 }
 
@@ -240,25 +280,26 @@ export class ServiceLayerAdapter {
       throw new Error(`Unsupported Service Layer TLS mode: ${String(tlsMode)}.`);
     }
 
+    const timeoutMs = config.timeoutMs ?? 30_000;
     let pinnedAgent: Agent | undefined;
     if (tlsMode === 'pinned') {
       if (!config.certificateSha256) {
         throw new Error('Pinned Service Layer TLS requires slCertificateSha256.');
       }
       const fingerprint = validateFingerprint(config.certificateSha256);
-      const serverName = validateServerName(config.tlsServerName);
+      const serverName = normalizeSniName(config.tlsServerName);
       pinnedAgent = new PinnedHttpsAgent(
-        baseUrl.hostname,
+        networkHost(baseUrl.hostname),
         Number(baseUrl.port || 443),
         fingerprint,
         serverName,
+        timeoutMs,
       );
     } else if (config.certificateSha256 || config.tlsServerName) {
       throw new Error('slCertificateSha256 and slTlsServerName require slTlsMode="pinned".');
     }
 
     const normalizedUrl = baseUrl.toString().replace(/\/$/, '');
-    const timeoutMs = config.timeoutMs ?? 30_000;
     const maxResponseChars = config.maxResponseChars ?? 100_000;
     const response = await this.request(
       `${normalizedUrl}/Login`,
@@ -295,7 +336,7 @@ export class ServiceLayerAdapter {
     this.initialised = true;
 
     const tlsDescription = tlsMode === 'pinned'
-      ? 'pinned-certificate TLS (CA/validity errors overridden only for the configured SHA-256 pin)'
+      ? 'pinned-certificate TLS (CA, hostname and validity checks replaced by an exact match against the approved SHA-256 pin)'
       : 'verified TLS';
     console.error(`[sl-adapter] Connected to ${tlsDescription}: ${normalizedUrl} (${config.database})`);
   }
@@ -307,7 +348,7 @@ export class ServiceLayerAdapter {
   getConnectionGeneration(): number { return this.connectionGeneration; }
   getTlsStatus(): string {
     return this.tlsMode === 'pinned'
-      ? 'PINNED TLS — certificate CA/validity verification replaced by an exact SHA-256 pin'
+      ? 'PINNED TLS — certificate CA, hostname and validity verification replaced by an exact SHA-256 pin'
       : 'verified TLS';
   }
   isConnected(): boolean { return this.initialised; }

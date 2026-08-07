@@ -142,6 +142,19 @@ credentials. A changed certificate requires approval again; clients without
 elicitation support fail closed. Legacy manual profile pin fields remain
 accepted only for that one-time migration into this local store.
 
+Once a certificate is pinned, that exact fingerprint is the whole check —
+hostname verification is not applied on top of it. SAP B1 issues its self-signed
+Service Layer certificate to the machine's short name (`DNS:MYSERVER`) while
+clients normally connect by FQDN, so re-verifying the name would reject an
+already-approved certificate with no way to accept it. `slTlsServerName` is
+therefore only the SNI name sent during the handshake, for hosts that serve a
+different certificate per name; it is not needed to make a pinned FQDN
+connection work. Service Layer URLs may use DNS names, IPv4 or IPv6. For an IP
+URL, SNI is omitted unless `slTlsServerName` supplies a DNS hostname; a legacy
+IP-valued `slTlsServerName` is accepted as a no-op. Older trust-store records may
+still carry `serverName` as a compatibility fallback, but new SNI configuration
+belongs in the connection profile rather than in certificate trust metadata.
+
 Profiles reload on every `connect_database` call. A DB-only profile can gain
 `slUrl`, `slUser` and `slPassword` while its DB connection is active; the next
 call keeps that DB connection and initializes only Service Layer.

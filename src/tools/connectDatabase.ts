@@ -10,7 +10,9 @@ import { DbAdapter } from '../db/adapter.js';
 import {
   canonicalServiceLayerOrigin,
   inspectServiceLayerCertificate,
+  safeCertificateDetail,
   ServiceLayerAdapter,
+  type ServiceLayerCertificateInspection,
   type ServiceLayerTlsMode,
 } from '../sl/serviceLayerAdapter.js';
 import { AuditLogger } from '../logging/auditLogger.js';
@@ -33,6 +35,20 @@ function fingerprintEquals(left: string | undefined, right: string): boolean {
   return !!left && left.replace(/[^a-fA-F0-9]/g, '').toUpperCase() === right.replace(/[^a-fA-F0-9]/g, '').toUpperCase();
 }
 
+/**
+ * Why the certificate was refused, carried into the failure itself. The reason
+ * — expired, or a name the certificate does not carry, alongside the names it
+ * does — otherwise appears only on the approval screen, which is precisely what
+ * a caller that cannot elicit never sees. Without it the refusal is a dead end
+ * that costs an openssl session to diagnose.
+ */
+function describeUntrustedCertificate(origin: string, inspection: ServiceLayerCertificateInspection): string {
+  return `Origin: ${origin}. Reason: ${safeCertificateDetail(inspection.tlsError) || 'unknown validation error'}. ` +
+    `Subject: ${safeCertificateDetail(inspection.subject)}. Issuer: ${safeCertificateDetail(inspection.issuer)}. ` +
+    `Valid from: ${safeCertificateDetail(inspection.validFrom)}. Valid to: ${safeCertificateDetail(inspection.validTo)}. ` +
+    `Presented SHA-256: ${inspection.certificateSha256}.`;
+}
+
 async function resolveServiceLayerTls(
   profile: ConnectionProfile,
   config: Config,
@@ -41,8 +57,12 @@ async function resolveServiceLayerTls(
 ): Promise<ResolvedTlsConfig> {
   const origin = canonicalServiceLayerOrigin(profile.slUrl!);
   const trusted = trustStore.get(origin);
-  const serverName = profile.slTlsServerName || trusted?.serverName;
-  const inspection = await inspectServiceLayerCertificate(profile.slUrl!, config.slTimeoutMs, serverName);
+  // `serverName` in trust records is retained only as a compatibility fallback
+  // for approvals created before SNI was separated from certificate identity.
+  // New SNI configuration belongs to the connection profile, not the trust pin.
+  const legacyServerName = trusted?.serverName;
+  const sniName = profile.slTlsServerName || legacyServerName;
+  const inspection = await inspectServiceLayerCertificate(profile.slUrl!, config.slTimeoutMs, sniName);
 
   if (inspection.strictTlsValid) {
     return { trustAction: 'strict' };
@@ -54,7 +74,6 @@ async function resolveServiceLayerTls(
   if (profile.slTlsMode === 'pinned' && fingerprintEquals(profile.slCertificateSha256, inspection.certificateSha256)) {
     trustStore.approve(origin, {
       certificateSha256: inspection.certificateSha256,
-      serverName: profile.slTlsServerName,
       subject: inspection.subject,
       issuer: inspection.issuer,
       validFrom: inspection.validFrom,
@@ -71,9 +90,9 @@ async function resolveServiceLayerTls(
   if (trusted && fingerprintEquals(trusted.certificateSha256, inspection.certificateSha256)) {
     return {
       tlsMode: 'pinned',
-      // An explicit profile override must be able to repair a stale/wrong name
-      // already stored beside the pin. `serverName` prefers that override.
-      tlsServerName: serverName,
+      // An explicit profile override repairs a stale legacy SNI stored beside
+      // the pin; otherwise the legacy value remains readable for compatibility.
+      tlsServerName: sniName,
       certificateSha256: inspection.certificateSha256,
       trustAction: 'existing-pin',
     };
@@ -111,16 +130,25 @@ async function resolveServiceLayerTls(
       },
     }, ElicitResultSchema, { timeout: config.elicitationTimeoutMs });
   } catch {
-    throw new Error('Service Layer TLS certificate is untrusted and the MCP client did not complete explicit certificate approval; credentials were not sent.');
+    throw new Error(
+      'Service Layer TLS certificate is untrusted and the MCP client did not complete explicit certificate approval; ' +
+      'credentials were not sent. Use an MCP client that supports form elicitation, then retry the connection. ' +
+      describeUntrustedCertificate(origin, inspection),
+    );
   }
 
   if (approval.action !== 'accept' || approval.content?.trustCertificate !== true) {
-    throw new Error('Service Layer TLS certificate was not approved; credentials were not sent.');
+    throw new Error(
+      'Service Layer TLS certificate was not approved; credentials were not sent. ' +
+      'Run connect_database again when you are ready to review it. ' + describeUntrustedCertificate(origin, inspection),
+    );
   }
 
   trustStore.approve(origin, {
     certificateSha256: inspection.certificateSha256,
-    serverName,
+    // Preserve an already-stored legacy SNI until the profile owns that
+    // routing setting. Never copy a new profile SNI into the trust store.
+    ...(legacyServerName && !profile.slTlsServerName ? { serverName: legacyServerName } : {}),
     subject: inspection.subject,
     issuer: inspection.issuer,
     validFrom: inspection.validFrom,
@@ -128,7 +156,7 @@ async function resolveServiceLayerTls(
   });
   return {
     tlsMode: 'pinned',
-    tlsServerName: serverName,
+    tlsServerName: sniName,
     certificateSha256: inspection.certificateSha256,
     trustAction: replacing ? 'replaced-pin' : 'approved-pin',
   };

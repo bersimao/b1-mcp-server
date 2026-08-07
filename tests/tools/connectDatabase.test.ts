@@ -99,11 +99,13 @@ describe('connect_database profile reload and TLS enrollment', () => {
       id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
       dbServer: 'db:30015', dbUser: 'db-user', dbPassword: 'db-secret',
       slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+      slTlsServerName: 'sap-internal',
     }]);
     inspectCertificate.mockResolvedValue({
       origin: 'https://sap.example.com:50000', certificateSha256: 'AA:BB',
       subject: '{"CN":"sap.example.com"}', issuer: '{"CN":"legacy"}',
       validFrom: 'old', validTo: 'expired', strictTlsValid: false, tlsError: 'certificate expired',
+      serverName: 'sap-internal',
     });
     const sendRequest = vi.fn().mockResolvedValue({ action: 'accept', content: { trustCertificate: true } });
 
@@ -114,11 +116,14 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(ctx.db.isConnected()).toBe(true);
     expect(ctx.directDb.init).not.toHaveBeenCalled();
     expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({
-      tlsMode: 'pinned', certificateSha256: 'AA:BB', database: 'SBO_CLIENT',
+      tlsMode: 'pinned', tlsServerName: 'sap-internal',
+      certificateSha256: 'AA:BB', database: 'SBO_CLIENT',
     }));
     expect(sendRequest).toHaveBeenCalledOnce();
     expect(sendRequest.mock.calls[0][0].params.message).toContain('No credentials have been sent');
-    expect(new ServiceLayerTrustStore(ctx.trustFile).get('https://sap.example.com:50000')?.certificateSha256).toBe('AA:BB');
+    const trusted = new ServiceLayerTrustStore(ctx.trustFile).get('https://sap.example.com:50000');
+    expect(trusted?.certificateSha256).toBe('AA:BB');
+    expect(trusted?.serverName).toBeUndefined();
   });
 
   it('keeps the active DB and does not attempt SL login when certificate approval is unavailable', async () => {
@@ -140,6 +145,10 @@ describe('connect_database profile reload and TLS enrollment', () => {
     );
 
     expect(result.content[0].text).toContain('credentials were not sent');
+    expect(result.content[0].text).toContain('Reason: certificate expired');
+    expect(result.content[0].text).toContain('Issuer: {}');
+    expect(result.content[0].text).toContain('Valid from: old');
+    expect(result.content[0].text).toContain('form elicitation');
     expect(ctx.db.isConnected()).toBe(true);
     expect(ctx.slInit).not.toHaveBeenCalled();
   });
@@ -340,6 +349,34 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({
       tlsMode: 'pinned', tlsServerName: 'new.sap.local', certificateSha256: 'AA:BB',
     }));
+  });
+
+  it('reuses an approved pin when the DNS URL is absent from the certificate names', async () => {
+    const ctx = setup();
+    new ServiceLayerTrustStore(ctx.trustFile).approve('https://sap.example.com:50000', {
+      certificateSha256: 'AA:BB', subject: '{"CN":"SAPSHORT"}', issuer: '{}',
+      validFrom: 'now', validTo: 'later',
+    });
+    writeProfiles(ctx.connectionsFile, [{
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+      dbServer: 'db:30015', dbUser: 'db-user', dbPassword: 'db-secret',
+      slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+    }]);
+    inspectCertificate.mockResolvedValue({
+      origin: 'https://sap.example.com:50000', certificateSha256: 'AA:BB',
+      subject: '{"CN":"SAPSHORT"}', issuer: '{}', validFrom: 'now', validTo: 'later',
+      strictTlsValid: false,
+      tlsError: 'Hostname/IP does not match certificate altnames: DNS:SAPSHORT',
+    });
+    const sendRequest = vi.fn();
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest });
+
+    expect(result.isError).toBeFalsy();
+    expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({
+      tlsMode: 'pinned', certificateSha256: 'AA:BB', tlsServerName: undefined,
+    }));
+    expect(sendRequest).not.toHaveBeenCalled();
   });
 
   it('ends a foreign DirectDb pool even when the target profile has no DB side', async () => {

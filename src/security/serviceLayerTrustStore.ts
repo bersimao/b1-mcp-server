@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 
 export interface ServiceLayerCertificateRecord {
   certificateSha256: string;
+  /** Legacy SNI fallback. New SNI configuration belongs in the connection profile. */
   serverName?: string;
   subject: string;
   issuer: string;

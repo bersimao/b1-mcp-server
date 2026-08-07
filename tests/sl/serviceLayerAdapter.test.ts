@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ServiceLayerAdapter } from '../../src/sl/serviceLayerAdapter.js';
+import {
+  canonicalServiceLayerOrigin,
+  ServiceLayerAdapter,
+} from '../../src/sl/serviceLayerAdapter.js';
 
 const loginResponse = () => new Response('', {
   status: 200,
@@ -13,6 +16,11 @@ afterEach(() => {
 });
 
 describe('ServiceLayerAdapter secure transport', () => {
+  it('keeps IPv6 brackets in canonical origins used as trust-store keys', () => {
+    expect(canonicalServiceLayerOrigin('https://[2001:DB8::1]:50000/b1s/v1'))
+      .toBe('https://[2001:db8::1]:50000');
+  });
+
   it('refuses the Node global TLS-disable escape hatch', async () => {
     process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
     const fetchMock = vi.fn();

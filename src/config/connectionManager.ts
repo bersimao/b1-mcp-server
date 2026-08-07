@@ -18,7 +18,7 @@
 //       "slUser": "manager",                       // optional
 //       "slPassword": "password",                  // optional
 //       "slTlsMode": "pinned",                     // legacy migration only
-//       "slTlsServerName": "sap.example.com",      // legacy migration only
+//       "slTlsServerName": "sap.example.com",      // optional pinned-TLS SNI name
 //       "slCertificateSha256": "AA:BB:..."          // legacy migration only
 //     }
 //   ]
@@ -84,7 +84,9 @@ export interface ConnectionProfile {
   slPassword?: string;
   /** TLS validation mode. Standard CA/hostname verification is the default. */
   slTlsMode?: 'strict' | 'pinned';
-  /** Certificate DNS identity/SNI name, mainly for IP-based pinned URLs. */
+  /** SNI name sent in the handshake so a multi-certificate host serves the right
+   *  one. Not an identity assertion: pinned mode accepts only the pinned
+   *  certificate regardless of the names it carries. */
   slTlsServerName?: string;
   /** Exact peer-certificate SHA-256 fingerprint required by pinned mode. */
   slCertificateSha256?: string;
