@@ -60,7 +60,7 @@ export interface Config {
   /** Max characters of rendered result JSON, after the row cap. */
   maxResultChars: number;
 
-  /** Dry-run mode: validate queries but don't execute them. */
+  /** Dry-run mode: validate raw SQL and PATCH but don't execute them. */
   dryRun: boolean;
 }
 

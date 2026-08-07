@@ -2,14 +2,16 @@
 // b1-mcp-server — Audit Logger
 // ============================================================================
 //
-// Every operation — allowed or denied — is logged BEFORE execution.
-// This creates a forensic trail for post-incident review.
+// Guarded operations that reach policy/execution are written to the audit file.
+// Allowed SQL/Service Layer intent and policy denials are logged before
+// execution; completion/failure records follow where the tool supports them.
 //
 // Format: JSON Lines (one JSON object per line) for easy ingestion
 // by log aggregation tools.
 //
-// IMPORTANT: We log to stderr and optionally to a file. Never to stdout,
-// because MCP uses stdout for JSON-RPC communication.
+// IMPORTANT: JSON Lines go to the configured file. A concise summary goes to
+// stderr at debug/info verbosity. Never log to stdout, because MCP uses stdout
+// for JSON-RPC communication.
 //
 // ============================================================================
 
@@ -51,7 +53,7 @@ export class AuditLogger {
   log(entry: AuditEntry): void {
     const line = JSON.stringify(entry);
 
-    // Always write to stderr (safe for MCP stdio transport)
+    // Write a concise summary to stderr when info logging is enabled.
     if (this.shouldLog('info')) {
       const prefix = entry.decision === 'DENY' ? '⛔' : entry.decision === 'PENDING_CONFIRMATION' ? '⏳' : '✅';
       console.error(

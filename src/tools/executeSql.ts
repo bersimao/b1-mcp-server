@@ -34,7 +34,7 @@ IMPORTANT: Before calling this tool, you MUST confirm which database the user in
 
 READ-ONLY: only SELECT (and read-only DO BEGIN...END blocks) execute. Data-changing statements are blocked server-side.
 
-If the user needs a write (INSERT/UPDATE/DELETE), do NOT call this tool — generate the SQL and give it to the user to run in a real DB client (HANA Studio / DBeaver / hdbsql), where COMMIT is guaranteed.
+If the user needs a write (INSERT/UPDATE/DELETE), do NOT call this tool — generate the SQL and give it to the user to run in a real DB client (HANA Studio / DBeaver / hdbsql), where a human can review the statement and control its transaction handling.
 
 Rules enforced server-side:
 - READ-ONLY: INSERT/UPDATE/DELETE/DROP are blocked for everyone — no confirmation bypass.

@@ -16,7 +16,7 @@ A second, less obvious threat: **B1 field content is attacker-reachable**. Text 
 
 The DirectDb/SQL path executes **only** `SELECT`, plus anonymous blocks whose statements are all reads. `INSERT / UPDATE / DELETE / DROP / CREATE / ALTER / EXEC` are blocked at the guardrail with **no confirmation bypass** — there is no parameter, no flag and no phrasing that lets the AI through.
 
-Writes are the human's job: the AI produces the SQL and a person runs it in a real DB client (HANA Studio / DBeaver / hdbsql), where `COMMIT` is guaranteed. This is deliberate — the shared `DirectDb` pool does not guarantee a commit and can leave orphaned, lock-holding transactions.
+Writes are the human's job: the AI produces the SQL and a person runs it in a real DB client (HANA Studio / DBeaver / hdbsql), where a human can review the statement and control its transaction handling. This is deliberate: the MCP SQL path is an inspection interface, not an AI-controlled data-mutation channel.
 
 The Service Layer path allows `GET` and guarded `PATCH`. PATCH is permitted only for one directly keyed entity after the client presents the exact database, Service Layer root, endpoint, fields, body and body hash to the user and receives explicit acceptance through MCP form elicitation. Clients without elicitation support fail closed. `POST`, `PUT` and `DELETE` are blocked server-side.
 
@@ -24,7 +24,7 @@ The Service Layer path allows `GET` and guarded `PATCH`. PATCH is permitted only
 
 | Tool | Operations | Risk |
 |---|---|---|
-| `connect_database` | Switch active DB + Service Layer profile | Low — credentials never leave the process |
+| `connect_database` | Connect the DB and/or Service Layer sides configured by a profile | Low — credentials never leave the process |
 | `execute_sql` | `SELECT` only (incl. read-only anonymous blocks) | Low |
 | `execute_service_layer` | OData `GET` / human-approved keyed `PATCH` | **Medium — PATCH remains a real write** |
 | `get_schema_info` | Catalog metadata | Low |
@@ -87,7 +87,7 @@ On the live read-only server this classification feeds the audit log; the per-op
 
 ### Layer 8 — Connection and operation serialization
 
-Connection switching and every DB/Service Layer operation share one coordinator. Only one client-database operation runs at a time. PATCH captures its target before approval and re-checks it immediately before execution; a profile change cancels the write. DirectDb pools are closed before reinitialization.
+Connection switching and every DB/Service Layer operation share one coordinator. Only one client-database operation runs at a time. Teardown is per side: a healthy side whose connection key still matches the selected profile remains active, while a stale or non-matching side is disconnected before replacement. PATCH captures its target before approval and re-checks it immediately before execution; a profile change cancels the write. DirectDb pools are closed before reinitialization.
 
 ### Layer 9 — Service Layer write controls
 
@@ -109,13 +109,18 @@ A sliding-window limiter per tool prevents AI runaway loops. Configurable via `M
 
 ### Layer 11 — Audit logging
 
-Every operation is logged before execution, including denied ones. Successful SQL
-execution adds a completion record with its duration, while SQL failures add a
-failure record with the error. PATCH audit records the endpoint, field names and
-exact-body SHA-256 hash without recording field values or session cookies.
-Approval, completion and failure are logged separately.
+Profile connection attempts and guarded SQL, schema, health-check and Service
+Layer work are written as JSON Lines to the configured audit file. SQL and
+Service Layer policy denials are included; allowed SQL/Service Layer intent is
+logged before execution, followed by a completion or failure record. PATCH
+audit records the endpoint, field names and exact-body SHA-256 hash without
+recording field values or session cookies. Approval, completion and failure are
+logged separately. Rate-limit rejections, `connect_database` profile listing,
+and early "not connected" responses do not currently create audit entries.
 
-Logs never go to stdout — the MCP stdio transport uses stdout for JSON-RPC.
+At `debug`/`info` level, a concise human-readable audit summary also goes to
+stderr. Logs never go to stdout — the MCP stdio transport uses stdout for
+JSON-RPC.
 
 ## Always blocked in raw SQL
 
@@ -132,7 +137,7 @@ Logs never go to stdout — the MCP stdio transport uses stdout for JSON-RPC.
 - Credentials live only in `~/.claude/connections.json`; there is **no env-var credential fallback**.
 - The AI never sees a password. The local Service Layer adapter discards username/password after verified-HTTPS login and retains only the session cookie.
 - The server starts **unconnected**. The AI selects a profile by name via `connect_database`; it cannot supply a host, database or credential of its own.
-- Switching is serialized with every operation, disconnects both sides, and closes the old DirectDb pool before initialization.
+- Switching is serialized with every operation. Each stale/non-matching side is disconnected before replacement; a healthy side that still matches the profile is retained. An old DirectDb pool is closed before DirectDb reinitialization.
 - Failed logins are tracked per profile and side, with a warning after 3 consecutive failures — SAP B1 locks accounts after repeated failures.
 - Protect the profile file: `chmod 600 ~/.claude/connections.json` (Linux/macOS) or the `icacls` equivalent on Windows. It is the real trust boundary — see below.
 - On POSIX systems, startup/reload fails closed when the profile mode grants any group/other permission. Audit files are created and maintained as `0600`.
@@ -142,7 +147,7 @@ Logs never go to stdout — the MCP stdio transport uses stdout for JSON-RPC.
 
 ## Dry-run mode
 
-`MCP_DRY_RUN=true` validates SQL and Service Layer PATCH without executing them. Useful for testing the security model against a new environment.
+The exact value `MCP_DRY_RUN=true` validates raw SQL and Service Layer PATCH without executing them. Connections, health checks, schema reads and Service Layer GET still execute. Useful for testing write/policy decisions against a new environment.
 
 ## Known limitations
 
@@ -153,7 +158,7 @@ Stated explicitly, because a security document that omits them is worse than non
 3. **Service Layer `PATCH` remains a powerful write after approval.** Entity fields are not allow-listed by design. The boundary is explicit human approval of the exact target/body plus SAP Business One authorization for the configured account. A careless approval can still damage business data; set `MCP_SL_PATCH_ENABLED=false` if this residual risk is unacceptable.
 4. **Pinned TLS accepts an expired or self-signed certificate by exact fingerprint.** This preserves encryption and resists an unpinned intermediary, but first approval is trust-on-first-use and cannot prove that an intermediary was absent. It also cannot provide the lifecycle assurance of a valid CA-issued certificate. If the certificate's private key is compromised, the pin no longer protects the connection. Prefer certificate renewal whenever possible.
 5. **`get_schema_info` does not pass through the guardrail engine.** It is the one SQL path with no net under it. The queries are fixed catalog SELECTs and the caller's `filter` is bound as a `?` parameter, never interpolated (`tests/tools/schemaIntrospection.test.ts` fails if that changes), so it carries no injection surface of its own — but it is still SQL that no rule inspects.
-6. **Read-only is not the same as harmless.** Partly addressed: lock-taking table hints (`UPDLOCK`, `XLOCK`, `TABLOCK`, `TABLOCKX`, `HOLDLOCK`, `SERIALIZABLE`, `REPEATABLEREAD`) are now denied — they would hold locks on a pool that never commits, blocking real B1 users. `NOLOCK`, `READPAST`, `ROWLOCK` and `PAGLOCK` stay allowed: they take no locks and add no duration. HANA's `SELECT ... FOR UPDATE` is caught by the write-keyword fail-safe. Results are capped at `MCP_MAX_RESULT_ROWS` rows then `MCP_MAX_RESULT_CHARS` characters, with truncation always announced. Query cost is bounded by `MCP_QUERY_TIMEOUT_MS` (default 60 s), handed to `DirectDb.init()`: HANA maps it to `communicationTimeout`, MS SQL to `connectionTimeout` + `requestTimeout`. This is the only limit that stops the *work* rather than the *output* — the row cap applies after the database has already computed the result.
+6. **Read-only is not the same as harmless.** Partly addressed: high-impact lock hints (`UPDLOCK`, `XLOCK`, `TABLOCK`, `TABLOCKX`, `HOLDLOCK`, `SERIALIZABLE`, `REPEATABLEREAD`) are denied because they can strengthen or retain locks while a query runs, blocking real B1 users for up to the query ceiling. Other locking/isolation hints remain allowed for compatibility, but they are not "lock-free": Microsoft documents that `NOLOCK` / `READUNCOMMITTED` still take schema-stability locks, `READCOMMITTEDLOCK` requests shared locking, `READPAST` skips row locks but not page locks, and `ROWLOCK` / `PAGLOCK` select lock granularity. See [Microsoft's table-hint reference](https://learn.microsoft.com/en-us/sql/t-sql/queries/hints-transact-sql-table). HANA's `SELECT ... FOR UPDATE` is caught by the write-keyword fail-safe. Results are capped at `MCP_MAX_RESULT_ROWS` rows then `MCP_MAX_RESULT_CHARS` characters, with truncation always announced. Query cost is bounded by `MCP_QUERY_TIMEOUT_MS` (default 60 s), handed to `DirectDb.init()`: HANA maps it to `communicationTimeout`, MS SQL to `connectionTimeout` + `requestTimeout`. This is the only limit that stops the *work* rather than the *output* — the row cap applies after the database has already computed the result.
 
 Both engines were measured against real servers, with a CPU-only query calibrated to outlast the ceiling. In each case the statement was confirmed gone from the engine's own running-request view well before its work would have finished — so it is genuinely killed, not merely abandoned by the client:
 
@@ -176,4 +181,6 @@ Those figures come from the original measurement on `hana-client` 2.21 / `mssql`
 
 ## Reporting vulnerabilities
 
-Please report security issues privately via GitHub Issues.
+Do not disclose vulnerability details in a public issue. Use GitHub's private
+vulnerability reporting for this repository when available; otherwise contact
+the maintainer through their GitHub profile to arrange a private channel.

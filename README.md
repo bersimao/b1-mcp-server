@@ -13,14 +13,18 @@ both the database (HANA / MS SQL) and the Service Layer OData API.
 - **Read-only by design**: the SQL path executes only `SELECT`. Every
   `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` is blocked server-side with no
   confirmation bypass — writes are handed to a human to run in a real DB client.
-- **Server-side guardrails**: all SQL goes through the same validation whether
-  the user or the AI wrote it. Anonymous `DO BEGIN..END` blocks are classified
-  by the most dangerous statement inside them, so a write hidden behind a
-  trailing `SELECT` is still a write.
-- **Audit log**: every operation, allowed or denied, is recorded as JSON Lines.
+- **Server-side guardrails**: all raw SQL submitted to `execute_sql` goes
+  through the same validation whether the user or the AI wrote it. Anonymous
+  `DO BEGIN..END` blocks are classified by the most dangerous statement inside
+  them, so a write hidden behind a trailing `SELECT` is still a write.
+- **Audit trail**: selected-profile connection attempts and database/Service
+  Layer calls that reach policy or execution are recorded as JSON Lines,
+  including policy denials.
 - **Rate limiting** per tool with sliding window.
 
 ## Install
+
+Requires Node.js 18 or newer.
 
 ```bash
 npx b1-mcp-server
@@ -31,7 +35,7 @@ Or add to your Claude Code MCP config:
 ```json
 {
   "mcpServers": {
-    "sps-db": {
+    "b1-db": {
       "command": "npx",
       "args": ["-y", "b1-mcp-server"]
     }
@@ -41,10 +45,10 @@ Or add to your Claude Code MCP config:
 
 ### Dependencies
 
-Four runtime dependencies: `@modelcontextprotocol/sdk`, `zod`,
+Five runtime dependencies: `@modelcontextprotocol/sdk`, `zod`,
 `@sap/hana-client` and `mssql` (plus `generic-pool`, which backs the HANA
 connection pool). Database access is a local driver — `src/db/directDb.ts` —
-built directly on the two SAP-supported clients; Service Layer traffic goes
+built directly on the HANA and MS SQL clients; Service Layer traffic goes
 through the strict-TLS adapter in `src/sl/serviceLayerAdapter.ts` using Node's
 own `fetch` and `https`. No HTTP framework, no axios, no PostgreSQL driver.
 
@@ -89,15 +93,21 @@ Example `~/.claude/connections.json`:
 ]
 ```
 
-Service Layer fields (`slUrl`, `slUser`, `slPassword`) are optional — DirectDb
-can be configured alone.
+Every profile requires `id`, `dbType` and `dbName`. Add `dbServer` and `dbUser`
+to configure DirectDb; add `slUrl` and `slUser` to configure Service Layer.
+Each configured side also requires its non-empty password (`dbPassword` or
+`slPassword`). Missing/empty passwords fail locally without a login attempt to
+avoid spending an account-lockout attempt; non-empty password strings are
+passed through without trimming. Either side, or both sides, can be configured
+in one profile.
 
 Both SAP Service Layer roots are supported: `/b1s/v1` for OData v3 and
 `/b1s/v2` for OData v4. Login, health checks and relative GET/PATCH requests
 use the exact root configured by the profile. Request validation is
 version-neutral; callers pass only the relative endpoint (for example,
 `Items?$select=ItemCode&$top=1`). OData query and payload differences remain
-the caller's responsibility. SAP recommends v2 for current installations.
+the caller's responsibility; configure the root supported by the target SAP B1
+installation.
 
 ## Security model
 
@@ -134,7 +144,6 @@ What the AI does see when it calls `connect_database` with `"list"`:
 
 - profile `id`
 - `dbName`, `dbType`
-- `slUrl` (URL only, no user/password)
 - a capability flag (`DB`, `SL`, `DB+SL`)
 
 Recommendations for your `connections.json`:
@@ -170,7 +179,9 @@ issued through the AI host; they cannot stop this MCP process, another local
 process, or a malicious npm package running as the same OS user from reading a
 mode-`0600` file. Strong isolation requires a dedicated OS identity, sandbox,
 or remotely hosted credential broker. See the
-[Claude Code hooks and managed-settings guidance](https://docs.anthropic.com/en/docs/claude-code/iam).
+[Claude Code hooks](https://code.claude.com/docs/en/hooks) and
+[server-managed settings](https://code.claude.com/docs/en/server-managed-settings)
+guidance.
 
 ## Configuration (env vars)
 
@@ -184,7 +195,7 @@ your MCP configuration, which the client passes to the spawned process:
 ```json
 {
   "mcpServers": {
-    "sps-db": {
+    "b1-db": {
       "command": "npx",
       "args": ["-y", "b1-mcp-server"],
       "env": {
@@ -203,8 +214,8 @@ found regardless of where `npx` runs from.
 | Variable | Default | Purpose |
 |---|---|---|
 | `MCP_CONNECTIONS_FILE` | `~/.claude/connections.json` | Path to profile file |
-| `MCP_AUDIT_LOG_PATH` | `~/.claude/logs/b1-mcp-audit.jsonl` | Audit log JSONL file. Empty disables file logging |
-| `MCP_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+| `MCP_AUDIT_LOG_PATH` | `~/.claude/logs/b1-mcp-audit.jsonl` | Audit log JSONL file. Unset or empty uses the default path |
+| `MCP_LOG_LEVEL` | `info` | Stderr verbosity: `debug` / `info` / `warn` / `error`. JSONL file logging is unaffected |
 | `MCP_MAX_QUERY_LENGTH` | `8000` | Max SQL length in characters |
 | `MCP_RATE_LIMIT_MAX_CALLS` | `60` | Max calls per tool per window |
 | `MCP_RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit window |
@@ -217,12 +228,13 @@ found regardless of where `npx` runs from.
 | `MCP_ELICITATION_TIMEOUT_MS` | `120000` | How long a human gets to answer an approval form (certificate trust, PATCH) before it fails closed |
 | `MCP_MAX_RESULT_ROWS` | `500` | Max rows returned to the model; extra rows are cut and announced |
 | `MCP_MAX_RESULT_CHARS` | `100000` | Max characters of result JSON, applied after the row cap |
-| `MCP_DRY_RUN` | `false` | If `true`, validate but don't execute |
+| `MCP_DRY_RUN` | `false` | The exact value `true` validates raw SQL and PATCH without executing them; connections and Service Layer GET still run |
 
-The numeric limits above must be positive integers. Anything else (a typo, an
-empty value, `0`) is rejected at startup with a message on stderr and the
-default is used instead — a misconfigured limit never means "no limit".
-`MCP_LOG_LEVEL` behaves the same way, falling back to `info`.
+The numeric limits above must be positive integers. An unset or whitespace-only
+value uses the default. Any other invalid value (including `0`, a negative or a
+non-integer) reports the fallback on stderr and uses the default — a
+misconfigured limit never means "no limit". `MCP_LOG_LEVEL` likewise uses
+`info` when unset/empty and reports a fallback for any other invalid value.
 
 ## Guardrail summary
 

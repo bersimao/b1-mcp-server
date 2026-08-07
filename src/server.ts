@@ -5,10 +5,10 @@
 // Creates the MCP server and registers all tools.
 //
 // Connection model:
-//   The server starts WITHOUT a database connection. The AI uses the
+//   The server starts WITHOUT any connection. The AI uses the
 //   connect_database tool to switch between databases loaded from
-//   ~/.claude/connections.json. Both DirectDb and Service Layer are
-//   connected in one step from the same profile.
+//   ~/.claude/connections.json. DirectDb, Service Layer, or both are connected
+//   from the same profile, depending on which credentials it configures.
 //
 // ============================================================================
 

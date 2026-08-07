@@ -45,24 +45,22 @@ const SELECT_INTO_RE = /\bINTO\s+(\S)/i;
  * (REPLACE(col,'a','b')). Its write spelling (HANA upsert) has no dedicated
  * OperationType and is already denied — bare REPLACE => OTHER, in-block
  * REPLACE => OTHER. UPDATE stays in the list: the only bare UPDATE inside a
- * read is "... FOR UPDATE", which takes row locks on the shared, never-committed
- * pool and must not run here anyway.
+ * read is "... FOR UPDATE", which takes row locks and must not run here anyway.
  */
 const FORBIDDEN_IN_READ_RE =
   /\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|MERGE|UPSERT|GRANT|REVOKE|RENAME|EXEC|EXECUTE|CALL|WRITETEXT|UPDATETEXT)\b/i;
 
 /**
- * MS SQL table hints that TAKE or HOLD locks.
+ * High-impact MS SQL table hints that strengthen or retain locks.
  *
- * Read-only is not the same as harmless. This server runs on a shared DirectDb
- * pool that never issues COMMIT, so any lock a query acquires is held until the
- * connection is recycled — long after the tool call returned. A SELECT with
- * UPDLOCK or TABLOCKX blocks real B1 users on production tables while looking
- * like an innocent read in the audit log.
+ * Read-only is not the same as harmless. A SELECT with UPDLOCK or TABLOCKX can
+ * block real B1 users on production tables for the duration of a long-running
+ * query while looking like an innocent read in the audit log.
  *
- * Only the hints that acquire or extend lock duration are listed. Deliberately
- * NOT blocked: NOLOCK / READUNCOMMITTED (take no locks), READPAST (skips locked
- * rows), and PAGLOCK / ROWLOCK (granularity only — no extra duration).
+ * Only the highest-risk hints are listed. Other locking/isolation hints remain
+ * allowed for compatibility but are not lock-free: NOLOCK / READUNCOMMITTED
+ * still take Sch-S locks; READCOMMITTEDLOCK requests shared locking; READPAST
+ * skips row locks but not page locks; PAGLOCK / ROWLOCK choose granularity.
  *
  * HANA's equivalent, "SELECT ... FOR UPDATE", needs no entry here: the bare
  * UPDATE keyword is already denied by FORBIDDEN_IN_READ_RE above.
@@ -129,16 +127,15 @@ export function evaluateSelect(parsed: ParsedQuery): GuardrailResult {
     };
   }
 
-  // Lock-taking table hints: a read that blocks other sessions is still an outage.
+  // High-impact lock hints: a read that blocks other sessions is still an outage.
   const lockHint = LOCK_HINT_RE.exec(scan);
   if (lockHint) {
     return {
       allowed: false,
       reason:
-        `The '${lockHint[1].toUpperCase()}' table hint is not permitted. It acquires or holds locks, ` +
-        `and this server runs on a shared connection pool that never commits — the locks would ` +
-        `outlive the query and block real B1 users. Remove the hint, or run the statement in a ` +
-        `real DB client where the transaction ends.`,
+        `The '${lockHint[1].toUpperCase()}' table hint is not permitted. It can strengthen or retain ` +
+        `locks while the query runs and block real B1 users. Remove the hint, or run the statement ` +
+        `in a real DB client with explicit transaction control.`,
       rule: 'lockHintBlock',
     };
   }

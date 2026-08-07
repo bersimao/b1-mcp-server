@@ -229,7 +229,7 @@ export function registerConnectDatabaseTool(
 Searches connection profiles by ID or database name (case-insensitive). Partial matches are only accepted when they resolve to a single profile.
 
 Each profile can include DirectDb (DB) credentials, Service Layer (SL) credentials, or both.
-When switching environments, both previous connections are always disconnected first to prevent cross-environment operations.
+When switching environments, each stale or non-matching side is disconnected before replacement; a healthy side that still matches the selected profile remains active.
 If only one side connects successfully, it remains active - retry the failed side after fixing credentials.
 Tracks failed login attempts per profile and warns about SAP B1 account lockout risk.
 

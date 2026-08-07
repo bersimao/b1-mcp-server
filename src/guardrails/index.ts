@@ -176,9 +176,9 @@ export function validateAnySql(sql: string): GuardrailResult & { parsed: ParsedQ
   }
 
   // READ-ONLY MODE — data-changing statements are disabled at the MCP layer, by design.
-  // The underlying DirectDb pool does not guarantee COMMIT and can leave orphaned,
-  // lock-holding transactions, so writes are the human's responsibility: the AI provides
-  // the SQL and a person runs it in a real DB client. There is no confirmation bypass.
+  // This is an inspection interface, not an AI-controlled data-mutation channel, so writes
+  // are the human's responsibility: the AI provides the SQL and a person runs it in a real
+  // DB client with explicit transaction control. There is no confirmation bypass.
   if (
     parsed.operation === OperationType.UPDATE ||
     parsed.operation === OperationType.INSERT ||

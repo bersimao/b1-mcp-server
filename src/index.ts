@@ -8,12 +8,12 @@
 // Connection model:
 //   Connection profiles are loaded from ~/.claude/connections.json.
 //   The server starts unconnected; the AI uses the connect_database tool
-//   to pick a profile and connect both DirectDb and Service Layer at runtime.
+//   to pick a profile and connect its configured DirectDb/Service Layer sides.
 //
 // Claude Code configuration:
 //   {
 //     "mcpServers": {
-//       "sps-db": {
+//       "b1-db": {
 //         "command": "node",
 //         "args": ["./dist/index.js"],
 //         "cwd": "/path/to/b1-mcp-server"

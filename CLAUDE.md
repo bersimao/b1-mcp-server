@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Read-only SQL posture:** DirectDb executes only `SELECT` (and anonymous blocks whose statements are all reads); every `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` is blocked. Service Layer allows `GET` and guarded `PATCH`. PATCH requires a directly keyed entity and explicit user acceptance through MCP form elicitation; clients without elicitation support fail closed. SQL writes remain the human's job.
 
-The server starts **without** any database or Service Layer connection. The AI must call `connect_database` to load a profile from `~/.claude/connections.json` and connect both sides at once. There is no env-var fallback — credentials live exclusively in that file.
+The server starts **without** any database or Service Layer connection. The AI must call `connect_database` to load a profile from `~/.claude/connections.json` and connect whichever side(s) that profile configures. There is no env-var fallback — credentials live exclusively in that file.
 
 End-user docs (install, connection profile shape, security posture) are in [README.md](README.md). This file is for working *on* the codebase.
 
@@ -19,7 +19,7 @@ npm install                        # one-time
 npm run build                      # tsc — prebuild wipes dist/ for a clean output
 npm run watch                      # tsc --watch
 npm run dev                        # tsx src/index.ts (skips build)
-npm test                           # vitest run — full suite (431 tests)
+npm test                           # vitest run — full suite
 npm run test:watch                 # vitest in watch mode
 
 # Single file
@@ -41,7 +41,7 @@ Driver regression harness against a real server — run this after any `@sap/han
 npx tsx scripts/validate-directdb.ts <profile-id> [--timeouts]
 ```
 
-Pre-publish dry run (verifies the tarball ships only `dist/`, `LICENSE`, `README.md`, `package.json`):
+Pre-publish dry run (verifies the tarball ships only `dist/`, `LICENSE`, `README.md`, `SECURITY.md`, `package.json`):
 
 ```bash
 npm pack --dry-run
@@ -63,7 +63,7 @@ Each adapter tracks `dbName` and `dbType` but does **not** retain credentials af
 - `OperationCoordinator` serializes every operation and environment switch.
 - Teardown is **per side**: each side carries a connection key (a hash of the profile fields that side uses), and any side whose key no longer matches the incoming profile is disconnected first — whether or not the new profile still configures it. Deleting the SL fields from a profile therefore really does end the session, and rotating one side's credentials no longer bounces the other. The invariant that DirectDb and Service Layer never point at different environments survives because a still-connected side either already matched the profile or is reconnected to it.
 - Partial success is allowed: if SL fails on the new target, DB stays active (and vice versa). Retrying the same profile reconnects only the failed side. Profiles reload on every connection call, so adding SL fields to an already-active DB-only profile initializes only SL.
-- Failed login attempts are tracked per profile/side; a warning is appended after `SAP_LOCKOUT_WARNING_THRESHOLD = 3` — SAP B1 locks accounts after repeated failures.
+- Failed login attempts are tracked per profile/side; a warning is appended after `SAP_LOCKOUT_WARNING_THRESHOLD = 3` because SAP B1 may lock accounts after repeated failures.
 
 Profile matching (`ConnectionManager.find` in [src/config/connectionManager.ts](src/config/connectionManager.ts)): exact `id` → exact `dbName` → **unique** partial substring match. Ambiguous partials (multiple profiles share the substring) return `undefined` and the tool surfaces the candidate list instead of guessing.
 
@@ -91,7 +91,7 @@ Every tool is registered in [src/server.ts](src/server.ts) and shares the same a
 
 | Tool | File | Purpose |
 |---|---|---|
-| `connect_database` | [tools/connectDatabase.ts](src/tools/connectDatabase.ts) | Switch active DB + SL; `"list"` to enumerate profiles |
+| `connect_database` | [tools/connectDatabase.ts](src/tools/connectDatabase.ts) | Connect the DB and/or SL sides configured by a profile; `"list"` to enumerate profiles |
 | `execute_sql` | [tools/executeSql.ts](src/tools/executeSql.ts) | Runs SQL (user- or AI-written) — **read-only**: only SELECT and read-only anonymous blocks pass `validateAnySql()` |
 | `execute_service_layer` | [tools/executeServiceLayer.ts](src/tools/executeServiceLayer.ts) | OData GET plus keyed, user-approved PATCH; POST/PUT/DELETE blocked |
 | `get_schema_info` | [tools/schemaIntrospection.ts](src/tools/schemaIntrospection.ts) | Read-only metadata, HANA + MSSQL catalog syntax. Fixed catalog SELECTs; the `filter` is bound as `?`, never interpolated — this is the only SQL path that skips the guardrail engine, so the bind is the whole defence |
@@ -112,7 +112,7 @@ Every tool is registered in [src/server.ts](src/server.ts) and shares the same a
    - **CUSTOM** (>4 chars, no `@`)
    - **TEMP** (`#` / `##` prefixed)
 3. Malformed-quoting deny (`malformedSql`) — both gates reject SQL with an unterminated `'`, `"` or `[` span (checked on comment-stripped text, so an apostrophe inside a comment is fine). An unclosed span blinds every scanner from that point to the end of the statement, so a write keyword after it would never be seen.
-4. Read-only enforcement — `validateAnySql()` permits only `SELECT`; `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` and unrecognised operations are all denied. Three writes-disguised-as-reads are blocked explicitly in [rules/selectRule.ts](src/guardrails/rules/selectRule.ts): `SELECT ... INTO <table>` (MS SQL table creation); pass-through functions (`OPENQUERY/OPENROWSET/OPENDATASOURCE`); and a **write-keyword fail-safe** — anything classified as a read that still contains a bare write/DDL/exec keyword (`INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/TRUNCATE/MERGE/UPSERT/GRANT/REVOKE/RENAME/EXEC/EXECUTE/CALL/WRITETEXT/UPDATETEXT`) is denied. The fail-safe closes statement chaining that carries no semicolon (e.g. T-SQL runs `SELECT * FROM ORDR WHERE 1=0 DELETE FROM ORDR` as two statements even though the multi-statement check sees no `;`) and backstops any gap in the block keyword scan. `REPLACE` is excluded there because it is a common string function; its upsert spelling has no read classification and is denied upstream. A fourth check denies **lock-taking table hints** (`UPDLOCK/XLOCK/TABLOCK/TABLOCKX/HOLDLOCK/SERIALIZABLE/REPEATABLEREAD`): the DirectDb pool never commits, so a lock a "read" acquires outlives the tool call and blocks real B1 users. `NOLOCK/READPAST/ROWLOCK/PAGLOCK` stay allowed — no locks, no added duration; HANA's `SELECT ... FOR UPDATE` needs no entry because the bare `UPDATE` already trips the fail-safe. All four checks run on comment-stripped, quote-blanked SQL so an inline comment (`OPENQUERY/**/(...)`) or a keyword hidden in a string/identifier cannot evade them.
+4. Read-only enforcement — `validateAnySql()` permits only `SELECT`; `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` and unrecognised operations are all denied. Three writes-disguised-as-reads are blocked explicitly in [rules/selectRule.ts](src/guardrails/rules/selectRule.ts): `SELECT ... INTO <table>` (MS SQL table creation); pass-through functions (`OPENQUERY/OPENROWSET/OPENDATASOURCE`); and a **write-keyword fail-safe** — anything classified as a read that still contains a bare write/DDL/exec keyword (`INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/TRUNCATE/MERGE/UPSERT/GRANT/REVOKE/RENAME/EXEC/EXECUTE/CALL/WRITETEXT/UPDATETEXT`) is denied. The fail-safe closes statement chaining that carries no semicolon (e.g. T-SQL runs `SELECT * FROM ORDR WHERE 1=0 DELETE FROM ORDR` as two statements even though the multi-statement check sees no `;`) and backstops any gap in the block keyword scan. `REPLACE` is excluded there because it is a common string function; its upsert spelling has no read classification and is denied upstream. A fourth check denies **high-impact lock hints** (`UPDLOCK/XLOCK/TABLOCK/TABLOCKX/HOLDLOCK/SERIALIZABLE/REPEATABLEREAD`) because they can strengthen or retain locks while a query runs. Other locking/isolation hints remain allowed for compatibility but are not lock-free: `NOLOCK` / `READUNCOMMITTED` still take schema-stability locks, `READCOMMITTEDLOCK` requests shared locking, `READPAST` does not skip page locks, and `ROWLOCK` / `PAGLOCK` select granularity. HANA's `SELECT ... FOR UPDATE` needs no entry because the bare `UPDATE` already trips the fail-safe. These scans run on comment-stripped, quote-blanked SQL so an inline comment (`OPENQUERY/**/(...)`) or a keyword hidden in a string/identifier cannot evade them.
 
 5. Result caps — [tools/formatResult.ts](src/tools/formatResult.ts) is the single renderer for `execute_sql`, `get_schema_info` and `execute_service_layer` GET. It slices to `MCP_MAX_RESULT_ROWS` (default 500), then cuts the rendered JSON at `MCP_MAX_RESULT_CHARS` (default 100 000). The guardrails decide whether a query *may* run, never how much it returns — `SELECT * FROM OUSR` is a legal read. The Service Layer path caps twice on purpose: the adapter bounds the *raw* response at `maxResponseChars`, but pretty-printing inflates it well past that, so the cap is reapplied to what actually reaches the model. Truncation is always announced in a leading `[TRUNCATED: …]` note: a silently partial result set is worse than none, because the model would reason over it as complete.
 
@@ -132,7 +132,7 @@ Always blocked in raw SQL regardless: `EXEC` / `EXECUTE` / `CALL`, `CREATE` / `A
 
 ### Audit log
 
-[src/logging/auditLogger.ts](src/logging/auditLogger.ts) writes JSON Lines to stderr (always) and optionally to a file (default: `~/.claude/logs/b1-mcp-audit.jsonl`, set via `MCP_AUDIT_LOG_PATH`). Logging happens **before execution** — denied operations are recorded too — and SQL execution writes a second completion/failure record with duration or error details. The MCP stdio transport uses stdout for JSON-RPC, so logs must never go to stdout.
+[src/logging/auditLogger.ts](src/logging/auditLogger.ts) writes JSON Lines to a file (default: `~/.claude/logs/b1-mcp-audit.jsonl`, set via `MCP_AUDIT_LOG_PATH`) and emits a concise human-readable summary to stderr at `debug`/`info` level. Allowed SQL/Service Layer intent and policy denials are recorded before execution, and successful/failed SQL or Service Layer execution writes a completion record with duration or error details. Connection attempts, schema reads and health checks are also audited; rate-limit rejections, profile listing and early "not connected" responses are not. The MCP stdio transport uses stdout for JSON-RPC, so logs must never go to stdout.
 
 ## Layout
 
