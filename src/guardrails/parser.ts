@@ -36,11 +36,11 @@ import { OperationType, ParsedQuery } from '../types/index.js';
  * SECURITY: quoted spans are copied VERBATIM — string literals ('...'),
  * quoted identifiers ("...") and bracketed identifiers ([...]). A comment
  * marker inside any of them is DATA, not a comment. Stripping it would delete
-   * SQL that the database still receives and executes, hiding it from every
-   * downstream scan (multi-statement detection, operation classification, the
-   * write-keyword fail-safe). The audit path receives the original raw SQL, so
-   * this is a validation-bypass risk rather than an audit-truncation risk. E.g.
-   * `SELECT 1 AS [x--]; DROP TABLE OITM` must not collapse to `SELECT 1 AS [x`.
+ * SQL that the database still receives and executes, hiding it from every
+ * downstream scan (multi-statement detection, operation classification, the
+ * write-keyword fail-safe). The audit path receives the original raw SQL, so
+ * this is a validation-bypass risk rather than an audit-truncation risk. E.g.
+ * `SELECT 1 AS [x--]; DROP TABLE OITM` must not collapse to `SELECT 1 AS [x`.
  */
 export function stripComments(sql: string): string {
   let result = '';
