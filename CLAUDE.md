@@ -56,14 +56,19 @@ npm pack --dry-run
 - [src/db/adapter.ts](src/db/adapter.ts) — `DbAdapter`
 - [src/sl/serviceLayerAdapter.ts](src/sl/serviceLayerAdapter.ts) — strict-by-default TLS `ServiceLayerAdapter` with explicit per-profile certificate pinning compatibility; retains only the session cookie
 
-Each adapter tracks `dbName` and `dbType` but does **not** retain credentials after init.
+`DbAdapter` tracks `dbName`, `dbType` and its connection key;
+`ServiceLayerAdapter` tracks `dbName`, the Service Layer root, TLS/session state
+and its connection key. The Service Layer adapter discards its configured
+username/password after login. DirectDb's live driver/pool may retain connection
+material needed to maintain or recreate database sessions, but `DbAdapter`
+exposes no credential accessors.
 
 [src/tools/connectDatabase.ts](src/tools/connectDatabase.ts) implements the safe dual-connection switch:
 
 - `OperationCoordinator` serializes every operation and environment switch.
 - Teardown is **per side**: each side carries a connection key (a hash of the profile fields that side uses), and any side whose key no longer matches the incoming profile is disconnected first — whether or not the new profile still configures it. Deleting the SL fields from a profile therefore really does end the session, and rotating one side's credentials no longer bounces the other. The invariant that DirectDb and Service Layer never point at different environments survives because a still-connected side either already matched the profile or is reconnected to it.
 - Partial success is allowed: if SL fails on the new target, DB stays active (and vice versa). Retrying the same profile reconnects only the failed side. Profiles reload on every connection call, so adding SL fields to an already-active DB-only profile initializes only SL.
-- Failed login attempts are tracked per profile/side; a warning is appended after `SAP_LOCKOUT_WARNING_THRESHOLD = 3` because SAP B1 may lock accounts after repeated failures.
+- Failed login attempts are tracked per profile/side; a warning is appended after `LOCKOUT_WARNING_THRESHOLD = 3` because repeated failures may trigger lockout under the database server's, SAP B1 company's, or authentication service's configured login policy.
 
 Profile matching (`ConnectionManager.find` in [src/config/connectionManager.ts](src/config/connectionManager.ts)): exact `id` → exact `dbName` → **unique** partial substring match. Ambiguous partials (multiple profiles share the substring) return `undefined` and the tool surfaces the candidate list instead of guessing.
 
@@ -83,7 +88,7 @@ The database driver, built directly on `@sap/hana-client` + `mssql` + `generic-p
 
 ### Service Layer
 
-Uses native `fetch` for strict TLS and a pinned native HTTPS transport for approved legacy endpoints. Both `/b1s/v1` (OData v3) and `/b1s/v2` (OData v4) profile roots are preserved exactly; the security policy validates only version-neutral relative endpoints. Invalid certificates are inspected without credentials and require MCP form elicitation before their exact fingerprint is saved in the local owner-only trust store. Changed certificates require approval again. Redirects are disabled, requests have fixed timeouts and bounded responses, and pins are checked before login credentials can be transmitted. A 401 requires reconnecting the profile; credentials are not retained for automatic login.
+Uses native `fetch` for strict TLS and a pinned native HTTPS transport for approved legacy endpoints. Both `/b1s/v1` (OData v3) and `/b1s/v2` (OData v4) profile roots are preserved exactly; the security policy validates only version-neutral relative endpoints. SAP deprecated OData v3 starting with SAP Business One 10.0 FP 2405 and made OData v4 primary, so new compatible profiles should prefer `/b1s/v2`. Invalid certificates are inspected without credentials and require MCP form elicitation before their exact fingerprint is saved in the local owner-only trust store. Changed certificates require approval again. Redirects are disabled, requests have fixed timeouts and bounded responses, and pins are checked before login credentials can be transmitted. A 401 requires reconnecting the profile; credentials are not retained for automatic login.
 
 ### MCP tools
 
@@ -105,14 +110,14 @@ Every tool is registered in [src/server.ts](src/server.ts) and shares the same a
 
 1. [parser.ts](src/guardrails/parser.ts) — tokenises and classifies operation type, table list, SET columns. For `DO BEGIN..END` (HANA) and `BEGIN..END` (MSSQL) anonymous blocks it classifies the block by the **most dangerous statement inside it**: any write/exec/DDL keyword (`INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/CALL/EXEC/TRUNCATE/MERGE/UPSERT/REPLACE/IMPORT/EXPORT/WRITETEXT/UPDATETEXT/GRANT/REVOKE/RENAME/…`) makes the whole block that operation, so a block can never be disguised as a read by appending a trailing `SELECT`. Keyword scanning blanks out quoted spans so a keyword inside a string/identifier doesn't false-trigger. Semicolons inside a block are allowed; bare multi-statement queries are not.
 
-   **Quoting is load-bearing.** `stripComments()` copies `'...'`, `"..."` and `[...]` spans verbatim (including `''`/`""`/`]]` escapes): a `--` or `/*` inside an identifier is data, not a comment. Stripping it used to delete the rest of the statement from the guardrail's view while the DB still executed it in full — `SELECT 1 AS [x--]; DROP TABLE OITM` collapsed to `SELECT 1 AS [x` and was allowed, with the audit log recording only the harmless prefix. Regression payloads live in [tests/guardrails/quotedSpanEvasion.test.ts](tests/guardrails/quotedSpanEvasion.test.ts). Any change to the comment/quote scanners must keep that suite green.
+   **Quoting is load-bearing.** `stripComments()` copies `'...'`, `"..."` and `[...]` spans verbatim (including `''`/`""`/`]]` escapes): a `--` or `/*` inside an identifier is data, not a comment. Stripping it used to delete the rest of the statement from the guardrail's view while the DB still executed it in full — `SELECT 1 AS [x--]; DROP TABLE OITM` collapsed to `SELECT 1 AS [x` and was allowed. The audit logger receives the original raw SQL and still recorded the complete input; the defect was guardrail bypass, not audit truncation. Regression payloads live in [tests/guardrails/quotedSpanEvasion.test.ts](tests/guardrails/quotedSpanEvasion.test.ts). Any change to the comment/quote scanners must keep that suite green.
 2. [tableClassifier.ts](src/guardrails/tableClassifier.ts) — name-based classification:
    - **SAP_CORE** (≤4 chars, e.g. `ORDR`, `OITM`, `INV1`): most restrictive
    - **SAP_USER** (`@`-prefixed UDTs, e.g. `@MY_UDT`)
    - **CUSTOM** (>4 chars, no `@`)
    - **TEMP** (`#` / `##` prefixed)
 3. Malformed-quoting deny (`malformedSql`) — both gates reject SQL with an unterminated `'`, `"` or `[` span (checked on comment-stripped text, so an apostrophe inside a comment is fine). An unclosed span blinds every scanner from that point to the end of the statement, so a write keyword after it would never be seen.
-4. Read-only enforcement — `validateAnySql()` permits only `SELECT`; `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` and unrecognised operations are all denied. Three writes-disguised-as-reads are blocked explicitly in [rules/selectRule.ts](src/guardrails/rules/selectRule.ts): `SELECT ... INTO <table>` (MS SQL table creation); pass-through functions (`OPENQUERY/OPENROWSET/OPENDATASOURCE`); and a **write-keyword fail-safe** — anything classified as a read that still contains a bare write/DDL/exec keyword (`INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/TRUNCATE/MERGE/UPSERT/GRANT/REVOKE/RENAME/EXEC/EXECUTE/CALL/WRITETEXT/UPDATETEXT`) is denied. The fail-safe closes statement chaining that carries no semicolon (e.g. T-SQL runs `SELECT * FROM ORDR WHERE 1=0 DELETE FROM ORDR` as two statements even though the multi-statement check sees no `;`) and backstops any gap in the block keyword scan. `REPLACE` is excluded there because it is a common string function; its upsert spelling has no read classification and is denied upstream. A fourth check denies **high-impact lock hints** (`UPDLOCK/XLOCK/TABLOCK/TABLOCKX/HOLDLOCK/SERIALIZABLE/REPEATABLEREAD`) because they can strengthen or retain locks while a query runs. Other locking/isolation hints remain allowed for compatibility but are not lock-free: `NOLOCK` / `READUNCOMMITTED` still take schema-stability locks, `READCOMMITTEDLOCK` requests shared locking, `READPAST` does not skip page locks, and `ROWLOCK` / `PAGLOCK` select granularity. HANA's `SELECT ... FOR UPDATE` needs no entry because the bare `UPDATE` already trips the fail-safe. These scans run on comment-stripped, quote-blanked SQL so an inline comment (`OPENQUERY/**/(...)`) or a keyword hidden in a string/identifier cannot evade them.
+4. Read-only enforcement — `validateAnySql()` permits only `SELECT`; `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` and unrecognised operations are all denied. Five SELECT-shaped hazards are blocked explicitly in [rules/selectRule.ts](src/guardrails/rules/selectRule.ts): sequence advancement (`NEXTVAL` / `NEXT VALUE FOR`); `SELECT ... INTO <table>` (MS SQL table creation); pass-through functions (`OPENQUERY/OPENROWSET/OPENDATASOURCE`); a **write-keyword fail-safe**; and high-impact lock hints (`UPDLOCK/XLOCK/TABLOCK/TABLOCKX/HOLDLOCK/SERIALIZABLE/REPEATABLEREAD`). The fail-safe denies anything classified as a read that still contains a bare write/DDL/exec keyword (`INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/TRUNCATE/MERGE/UPSERT/GRANT/REVOKE/RENAME/EXEC/EXECUTE/CALL/WRITETEXT/UPDATETEXT`), closing statement chaining that carries no semicolon and backstopping any gap in the block keyword scan. `REPLACE` is excluded there because it is a common string function; its upsert spelling has no read classification and is denied upstream. Other locking/isolation hints remain allowed for compatibility but are not lock-free: `NOLOCK` / `READUNCOMMITTED` still take schema-stability locks, `READCOMMITTEDLOCK` requests shared locking, `READPAST` does not skip page locks, and `ROWLOCK` / `PAGLOCK` select granularity. HANA's `SELECT ... FOR UPDATE` needs no entry because the bare `UPDATE` already trips the fail-safe. These scans run on comment-stripped, quote-blanked SQL so an inline comment (`OPENQUERY/**/(...)`) or a keyword hidden in a string/identifier cannot evade them.
 
 5. Result caps — [tools/formatResult.ts](src/tools/formatResult.ts) is the single renderer for `execute_sql`, `get_schema_info` and `execute_service_layer` GET. It slices to `MCP_MAX_RESULT_ROWS` (default 500), then cuts the rendered JSON at `MCP_MAX_RESULT_CHARS` (default 100 000). The guardrails decide whether a query *may* run, never how much it returns — `SELECT * FROM OUSR` is a legal read. The Service Layer path caps twice on purpose: the adapter bounds the *raw* response at `maxResponseChars`, but pretty-printing inflates it well past that, so the cap is reapplied to what actually reaches the model. Truncation is always announced in a leading `[TRUNCATED: …]` note: a silently partial result set is worse than none, because the model would reason over it as complete.
 
@@ -128,7 +133,7 @@ Classification model (the rules under `guardrails/rules/`, exercised by tests �
 | DELETE | block | confirm | allow | allow |
 | DROP | block | block | only inside `BEGIN..END` | only inside `BEGIN..END` |
 
-Always blocked in raw SQL regardless: `EXEC` / `EXECUTE` / `CALL`, `CREATE` / `ALTER`, and multi-statement queries (semicolons outside blocks).
+Always blocked in raw SQL regardless: `EXEC` / `EXECUTE` / `CALL`, `CREATE` / `ALTER`, sequence advancement, high-impact SQL Server lock hints, and multi-statement queries (semicolons outside blocks).
 
 ### Audit log
 
@@ -158,12 +163,12 @@ scripts/
 ## Design principles
 
 1. **Deny by default.** Unrecognised operations are rejected.
-2. **Audit before execute.** Even denied operations are written to the audit log.
+2. **Audit guarded intent and policy decisions.** SQL and Service Layer intent and denials are logged before execution where supported; completion, connection and health events are recorded at their actual stage. Rate-limit rejections, profile listing and early "not connected" responses are documented exceptions.
 3. **Never rewrite suspicious queries.** Accept as-is or reject; no silent normalisation.
 4. **Server is the authority on SQL safety.** The live SQL path is read-only: `validateAnySql()` executes only `SELECT`. Anonymous `DO BEGIN..END` / `BEGIN..END` blocks are classified by their most dangerous inner statement, so a write/exec hidden behind a trailing `SELECT` is still blocked — trust does not depend on the AI pre-validating.
 5. **HANA vs MSSQL syntax differs** throughout (e.g. `CALL` vs `EXEC`, `DO BEGIN` vs `BEGIN`, schema-introspection queries). When adding features, handle both.
-6. **`{db}` placeholder** appears in every generated query so DirectDb resolves the schema for the active profile.
-7. **Credentials never leave through the MCP protocol.** Profile listings expose only `id`, `dbName`, `dbType`, `slUrl`, capability flags. Adapters do not retain passwords. Nothing is interpolated into tool responses, audit entries, or error messages. This does not prevent a same-user AI shell/filesystem tool from opening `connections.json`; deployment documentation requires managed hooks/sandboxing and identifies separate OS identity as the strong boundary.
+6. **`{db}` placeholder** is available when a query needs explicit active-profile schema qualification. Fixed schema-introspection and health-check queries instead use `CURRENT_SCHEMA`, `DB_NAME()` or engine-specific built-ins.
+7. **Do not deliberately expose profile passwords through MCP.** Profile listings expose only `id`, `dbName`, `dbType`, capability flags and an optional active marker. The Service Layer adapter discards its configured username/password after login; DirectDb's driver/pool may retain connection material required for its session lifecycle, but exposes no credential accessor through `DbAdapter`. Server-owned formatting does not interpolate passwords, while upstream database-driver and Service Layer errors are returned and audited verbatim, so the system is not a general secret-redaction boundary. This also does not prevent a same-user AI shell/filesystem tool from opening `connections.json`; deployment documentation requires managed hooks/sandboxing and identifies separate OS identity as the strong boundary.
 
 ## Tech stack
 

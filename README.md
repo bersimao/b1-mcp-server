@@ -96,10 +96,10 @@ Example `~/.claude/connections.json`:
 Every profile requires `id`, `dbType` and `dbName`. Add `dbServer` and `dbUser`
 to configure DirectDb; add `slUrl` and `slUser` to configure Service Layer.
 Each configured side also requires its non-empty password (`dbPassword` or
-`slPassword`). Missing/empty passwords fail locally without a login attempt to
-avoid spending an account-lockout attempt; non-empty password strings are
-passed through without trimming. Either side, or both sides, can be configured
-in one profile.
+`slPassword`). Missing/empty passwords fail locally without a login attempt,
+avoiding an unnecessary failure that may count toward account lockout under the
+configured login policy. Non-empty password strings are passed through without
+trimming. Either side, or both sides, can be configured in one profile.
 
 Both SAP Service Layer roots are supported: `/b1s/v1` for OData v3 and
 `/b1s/v2` for OData v4. Login, health checks and relative GET/PATCH requests
@@ -107,17 +107,25 @@ use the exact root configured by the profile. Request validation is
 version-neutral; callers pass only the relative endpoint (for example,
 `Items?$select=ItemCode&$top=1`). OData query and payload differences remain
 the caller's responsibility; configure the root supported by the target SAP B1
-installation.
+installation. SAP deprecated OData v3 starting with SAP Business One 10.0 FP
+2405 and made OData v4 the primary protocol, so prefer `/b1s/v2` when the target
+installation supports it; see the
+[Service Layer API reference](https://help.sap.com/doc/056f69366b5345a386bb8149f1700c19/10.0/en-US/Service%20Layer%20API%20Reference.html).
 
 ## Security model
 
-**MCP tool responses never expose credentials.** They are read from
-`~/.claude/connections.json` inside the server process, passed directly into
-the connection adapters, and are never interpolated into any tool response,
-audit log entry, or error message. The Service Layer adapter retains only the
-session cookie after login, not the username or password. This protocol-level
-protection does not stop an AI host that has unrestricted same-user shell or
-filesystem access from opening the file directly; see the hook guidance below.
+**The server does not intentionally interpolate profile passwords into MCP tool
+responses or audit entries.** Passwords are read from
+`~/.claude/connections.json` inside the server process and passed directly to
+the configured database or Service Layer endpoint for login. The Service Layer
+adapter retains only the session cookie afterward, not the username or
+password. Database-driver and Service Layer error messages are returned and
+audited verbatim for diagnosis, however, so there is no general-purpose secret
+redaction boundary around arbitrary upstream error text. Do not place secrets
+in profile IDs, database names, URLs or other non-password metadata. This
+protocol-level protection also does not stop an AI host that has unrestricted
+same-user shell or filesystem access from opening the file directly; see the
+hook guidance below.
 
 Service Layer connections require HTTPS with normal certificate validation by
 default. For an internal certificate authority, set `NODE_EXTRA_CA_CERTS` to
@@ -128,10 +136,11 @@ For a legacy SAP installation whose certificate cannot be renewed, the first
 explicit approval through MCP form elicitation. An accepted certificate is
 stored by canonical `https://host:port` origin in
 `~/.claude/service-layer-trust.json` (mode `0600`), so profiles sharing one SL
-endpoint share one pin. The file is created only after the first approval and
-contains no credentials. A changed certificate requires approval again;
-clients without elicitation support fail closed. Legacy manual profile pin
-fields remain accepted only for one-time migration into this local store.
+endpoint share one pin. The file is created after explicit approval or after a
+matching legacy manual profile pin is migrated successfully, and contains no
+credentials. A changed certificate requires approval again; clients without
+elicitation support fail closed. Legacy manual profile pin fields remain
+accepted only for that one-time migration into this local store.
 
 Profiles reload on every `connect_database` call. A DB-only profile can gain
 `slUrl`, `slUser` and `slPassword` while its DB connection is active; the next
@@ -145,6 +154,7 @@ What the AI does see when it calls `connect_database` with `"list"`:
 - profile `id`
 - `dbName`, `dbType`
 - a capability flag (`DB`, `SL`, `DB+SL`)
+- an `active` marker when either configured side is currently connected
 
 Recommendations for your `connections.json`:
 
@@ -243,14 +253,17 @@ table you touch:
 
 | Operation | Any table (SAP core, UDT, custom, temp) |
 |---|---|
-| SELECT | allow |
+| SELECT | allow, subject to the SELECT-specific restrictions below |
 | INSERT / UPDATE / DELETE / DROP | block — run it yourself in a DB client |
 | CREATE / ALTER | block |
 | EXEC / EXECUTE / CALL | block — stored procedures cannot be run through this server |
 
 Also blocked: multi-statement queries (semicolons outside `BEGIN..END`),
-unterminated quotes or brackets, `OPENQUERY` / `OPENROWSET` / `OPENDATASOURCE`,
-and `SELECT ... INTO <table>`.
+unterminated quotes or brackets, sequence advancement (`NEXTVAL` /
+`NEXT VALUE FOR`), `OPENQUERY` / `OPENROWSET` / `OPENDATASOURCE`,
+`SELECT ... INTO <table>`, and high-impact SQL Server lock hints (`UPDLOCK`,
+`XLOCK`, `TABLOCK`, `TABLOCKX`, `HOLDLOCK`, `SERIALIZABLE`,
+`REPEATABLEREAD`).
 
 Service Layer requests allow `GET` and guarded `PATCH` only. `POST` / `PUT` /
 `DELETE` are blocked. PATCH requires one directly keyed entity endpoint and an

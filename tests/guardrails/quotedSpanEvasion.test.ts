@@ -6,7 +6,7 @@
 // ([x--]) is DATA, not a comment. Before this suite existed, stripComments()
 // tracked only '...' spans, so it deleted everything after such a marker — the
 // database still received and executed the full statement, but the guardrails
-// (and the audit log) only ever saw the harmless prefix.
+// only saw the harmless prefix. The audit path receives the original raw SQL.
 //
 // Every payload below was confirmed ALLOWED by the live gate at the time it was
 // written. They must stay blocked.

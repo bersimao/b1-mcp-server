@@ -24,7 +24,7 @@ The Service Layer path allows `GET` and guarded `PATCH`. PATCH is permitted only
 
 | Tool | Operations | Risk |
 |---|---|---|
-| `connect_database` | Connect the DB and/or Service Layer sides configured by a profile | Low — credentials never leave the process |
+| `connect_database` | Connect the DB and/or Service Layer sides configured by a profile | Low — passwords are sent only to the configured endpoint and are not deliberately returned through MCP |
 | `execute_sql` | `SELECT` only (incl. read-only anonymous blocks) | Low |
 | `execute_service_layer` | OData `GET` / human-approved keyed `PATCH` | **Medium — PATCH remains a real write** |
 | `get_schema_info` | Catalog metadata | Low |
@@ -46,7 +46,7 @@ SQL containing an unterminated `'`, `"` or `[` span is denied outright (`malform
 
 Comments are removed and quoted spans blanked before any keyword scan, so a payload cannot hide behind `OPENQUERY/**/(...)` or inside a string literal.
 
-**Quoting is load-bearing here.** `'...'`, `"..."` and `[...]` spans (including `''` / `""` / `]]` escapes) are copied verbatim by the comment stripper: a `--` or `/*` inside an identifier is *data*, not a comment. Treating it as a comment would delete the rest of the statement from the guardrail's view while the database still executed it in full — and would leave the audit log recording only the harmless prefix. Regression payloads live in `tests/guardrails/quotedSpanEvasion.test.ts`.
+**Quoting is load-bearing here.** `'...'`, `"..."` and `[...]` spans (including `''` / `""` / `]]` escapes) are copied verbatim by the comment stripper: a `--` or `/*` inside an identifier is *data*, not a comment. Treating it as a comment would delete the rest of the statement from the guardrail's view while the database still executed it in full, allowing a harmful suffix to bypass validation. The audit logger receives the original raw SQL and would still record the complete input; this was a validation failure, not an audit-truncation failure. Regression payloads live in `tests/guardrails/quotedSpanEvasion.test.ts`.
 
 ### Layer 4 — Parsing and operation classification
 
@@ -65,11 +65,13 @@ A lightweight, security-focused parser determines:
 
 ### Layer 6 — Writes disguised as reads
 
-Three checks catch statements that look like reads but are not, all running on comment-stripped, quote-blanked SQL:
+Five checks catch state changes and high-impact locking hidden in SELECT-shaped statements, all running on comment-stripped, quote-blanked SQL:
 
-1. **Pass-through functions** — `OPENQUERY` / `OPENROWSET` / `OPENDATASOURCE` can execute arbitrary SQL, including writes, on a linked server.
-2. **`SELECT ... INTO <table>`** — creates and populates a table in MS SQL. HANA's `SELECT ... INTO :variable` (scalar assignment) is a genuine read and stays allowed.
-3. **Write-keyword fail-safe** — anything classified as a read that still contains a bare write/DDL/exec keyword is denied. This closes statement chaining that carries **no semicolon** (T-SQL runs `SELECT * FROM ORDR WHERE 1=0 DELETE FROM ORDR` as two statements) and backstops any gap in the block scan. `REPLACE` is excluded because it is a common string function; its upsert spelling has no read classification and is denied upstream.
+1. **Sequence advancement** — HANA `NEXTVAL` and SQL Server `NEXT VALUE FOR` consume persistent sequence state even inside a `SELECT`.
+2. **Pass-through functions** — `OPENQUERY` / `OPENROWSET` / `OPENDATASOURCE` can execute arbitrary SQL, including writes, on a linked server.
+3. **`SELECT ... INTO <table>`** — creates and populates a table in MS SQL. HANA's `SELECT ... INTO :variable` (scalar assignment) is a genuine read and stays allowed.
+4. **Write-keyword fail-safe** — anything classified as a read that still contains a bare write/DDL/exec keyword is denied. This closes statement chaining that carries **no semicolon** (T-SQL runs `SELECT * FROM ORDR WHERE 1=0 DELETE FROM ORDR` as two statements) and backstops any gap in the block scan. `REPLACE` is excluded because it is a common string function; its upsert spelling has no read classification and is denied upstream.
+5. **High-impact SQL Server lock hints** — `UPDLOCK`, `XLOCK`, `TABLOCK`, `TABLOCKX`, `HOLDLOCK`, `SERIALIZABLE` and `REPEATABLEREAD` are denied because they can strengthen or retain locks and block other sessions.
 
 ### Layer 7 — Table classification
 
@@ -135,10 +137,10 @@ JSON-RPC.
 ## Connection security
 
 - Credentials live only in `~/.claude/connections.json`; there is **no env-var credential fallback**.
-- The AI never sees a password. The local Service Layer adapter discards username/password after verified-HTTPS login and retains only the session cookie.
+- The server does not deliberately interpolate profile passwords into tool responses or audit fields. Passwords are sent only to the configured endpoint for login; the local Service Layer adapter then discards username/password and retains only the session cookie. Upstream database-driver and Service Layer errors are returned and audited verbatim, so they are not a general secret-redaction boundary.
 - The server starts **unconnected**. The AI selects a profile by name via `connect_database`; it cannot supply a host, database or credential of its own.
 - Switching is serialized with every operation. Each stale/non-matching side is disconnected before replacement; a healthy side that still matches the profile is retained. An old DirectDb pool is closed before DirectDb reinitialization.
-- Failed logins are tracked per profile and side, with a warning after 3 consecutive failures, because SAP B1 may lock accounts after repeated failures depending on the company's password policy.
+- Failed logins are tracked per profile and side, with a warning after 3 consecutive failures, because repeated attempts may trigger lockout under the database server's, SAP B1 company's, or authentication service's configured login policy.
 - Protect the profile file: `chmod 600 ~/.claude/connections.json` (Linux/macOS) or the `icacls` equivalent on Windows. It is the real trust boundary — see below.
 - On POSIX systems, startup/reload fails closed when the profile mode grants any group/other permission. Audit files are created and maintained as `0600`.
 - For Claude Code, deploy a managed `PreToolUse` deny policy and filesystem sandbox for the canonical `connections.json` path. Cover read/search/edit/filesystem MCP tools and restrict shell access; a literal path-matching hook alone is bypass-prone through indirect filesystem access.
@@ -154,7 +156,7 @@ The exact value `MCP_DRY_RUN=true` validates raw SQL and Service Layer PATCH wit
 Stated explicitly, because a security document that omits them is worse than none:
 
 1. **No authentication at the MCP layer.** Anything that can speak stdio to this process can list profiles and connect to any of them, production included. That is inherent to local stdio MCP: the OS user account and the permissions on `connections.json` are the actual boundary.
-2. **Same-user AI shell access defeats file secrecy.** The server never emits credentials through MCP, but it cannot stop an AI host with unrestricted shell/filesystem tools from opening an owner-readable `connections.json`. Managed hooks and sandbox denies reduce this risk but are not equivalent to a separate OS identity.
+2. **Credential handling is not a universal redaction boundary.** The server does not deliberately interpolate profile passwords into responses or audit fields, but database-driver and Service Layer error messages are returned and audited verbatim for diagnosis. It also cannot stop an AI host with unrestricted shell/filesystem tools from opening an owner-readable `connections.json`. Managed hooks and sandbox denies reduce these risks but are not equivalent to a dedicated redaction layer or separate OS identity.
 3. **Service Layer `PATCH` remains a powerful write after approval.** Entity fields are not allow-listed by design. The boundary is explicit human approval of the exact target/body plus SAP Business One authorization for the configured account. A careless approval can still damage business data; set `MCP_SL_PATCH_ENABLED=false` if this residual risk is unacceptable.
 4. **Pinned TLS accepts an expired or self-signed certificate by exact fingerprint.** This preserves encryption and resists an unpinned intermediary, but first approval is trust-on-first-use and cannot prove that an intermediary was absent. It also cannot provide the lifecycle assurance of a valid CA-issued certificate. If the certificate's private key is compromised, the pin no longer protects the connection. Prefer certificate renewal whenever possible.
 5. **`get_schema_info` does not pass through the guardrail engine.** It is the one SQL path with no net under it. The queries are fixed catalog SELECTs and the caller's `filter` is bound as a `?` parameter, never interpolated (`tests/tools/schemaIntrospection.test.ts` fails if that changes), so it carries no injection surface of its own — but it is still SQL that no rule inspects.

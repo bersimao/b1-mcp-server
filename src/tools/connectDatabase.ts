@@ -169,11 +169,11 @@ function formatCapabilities(p: ConnectionProfile): string {
 
 // ---------------------------------------------------------------------------
 // Failed connection attempt tracker
-// SAP B1 locks user accounts after repeated failed login attempts.
-// We track failures per profile+side to warn before a lockout occurs.
+// Database, SAP B1 company, and authentication-service policies can lock
+// accounts after repeated failures. Track each profile side independently.
 // ---------------------------------------------------------------------------
 
-const SAP_LOCKOUT_WARNING_THRESHOLD = 3;
+const LOCKOUT_WARNING_THRESHOLD = 3;
 
 interface FailedAttempts {
   db: number;
@@ -201,8 +201,8 @@ function resetFailures(profileId: string, side: 'db' | 'sl'): void {
 }
 
 function formatLockoutWarning(profileId: string, side: string, count: number): string {
-  if (count >= SAP_LOCKOUT_WARNING_THRESHOLD) {
-    return `\nWARNING: ${count} consecutive failed ${side} login attempts for "${profileId}". SAP B1 may lock this user account after repeated failures. Please verify the credentials before retrying.`;
+  if (count >= LOCKOUT_WARNING_THRESHOLD) {
+    return `\nWARNING: ${count} consecutive failed ${side} login attempts for "${profileId}". The configured account may be locked under its login policy after repeated failures. Please verify the credentials before retrying.`;
   }
   return '';
 }
@@ -231,7 +231,7 @@ Searches connection profiles by ID or database name (case-insensitive). Partial 
 Each profile can include DirectDb (DB) credentials, Service Layer (SL) credentials, or both.
 When switching environments, each stale or non-matching side is disconnected before replacement; a healthy side that still matches the selected profile remains active.
 If only one side connects successfully, it remains active - retry the failed side after fixing credentials.
-Tracks failed login attempts per profile and warns about SAP B1 account lockout risk.
+Tracks failed login attempts per profile and warns about account lockout risk under the configured login policy.
 
 Available profiles:
 ${profileList}
@@ -468,12 +468,11 @@ Use "list" as the query to reload and list all available profiles.`,
       let slTrustAction: ResolvedTlsConfig['trustAction'] | undefined;
 
       if (hasSl && !slAlreadyOnTarget && !profile.slPassword) {
-        // An empty password is a guaranteed rejection, and SAP B1 counts it
-        // against the account's lockout threshold like any other bad login.
-        // Fail locally instead of spending one of the user's few attempts.
+        // An empty password would be rejected and may count toward a configured
+        // lockout threshold. Fail locally rather than sending it.
         slError =
           'slPassword is missing or empty for this profile. No login was attempted, ' +
-          'because an empty password would count towards SAP B1 account lockout.';
+          'because an empty password may count towards account lockout under the configured login policy.';
       } else if (hasSl && !slAlreadyOnTarget) {
         try {
           const tls = await resolveServiceLayerTls(profile, config, trustStore, extra);

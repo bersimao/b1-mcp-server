@@ -144,7 +144,7 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(ctx.slInit).not.toHaveBeenCalled();
   });
 
-  it('does not spend a SAP lockout attempt on a profile with an empty slPassword', async () => {
+  it('does not spend a possible lockout attempt on a profile with an empty slPassword', async () => {
     // SAP B1 counts an empty-password login like any other failure, and the
     // account locks after a few. A guaranteed-invalid attempt must never be sent.
     const ctx = setup();

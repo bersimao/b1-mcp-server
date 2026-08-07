@@ -24,8 +24,9 @@
 //   );
 //
 //   // {db} placeholder → replaced by schema for HANA, removed for MSSQL
-//   // ? placeholders  → parameter binding (protects against SQL injection)
-//   // NOTE: placeholders work for SELECT but NOT for UPDATE
+//   // ? placeholders  → parameter binding for every statement type
+//   // The live MCP SQL path permits reads only; generic binding remains available
+//   // to internal callers of DirectDb.
 //
 // ============================================================================
 
