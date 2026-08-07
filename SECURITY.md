@@ -138,7 +138,7 @@ JSON-RPC.
 - The AI never sees a password. The local Service Layer adapter discards username/password after verified-HTTPS login and retains only the session cookie.
 - The server starts **unconnected**. The AI selects a profile by name via `connect_database`; it cannot supply a host, database or credential of its own.
 - Switching is serialized with every operation. Each stale/non-matching side is disconnected before replacement; a healthy side that still matches the profile is retained. An old DirectDb pool is closed before DirectDb reinitialization.
-- Failed logins are tracked per profile and side, with a warning after 3 consecutive failures — SAP B1 locks accounts after repeated failures.
+- Failed logins are tracked per profile and side, with a warning after 3 consecutive failures, because SAP B1 may lock accounts after repeated failures depending on the company's password policy.
 - Protect the profile file: `chmod 600 ~/.claude/connections.json` (Linux/macOS) or the `icacls` equivalent on Windows. It is the real trust boundary — see below.
 - On POSIX systems, startup/reload fails closed when the profile mode grants any group/other permission. Audit files are created and maintained as `0600`.
 - For Claude Code, deploy a managed `PreToolUse` deny policy and filesystem sandbox for the canonical `connections.json` path. Cover read/search/edit/filesystem MCP tools and restrict shell access; a literal path-matching hook alone is bypass-prone through indirect filesystem access.
