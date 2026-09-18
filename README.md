@@ -24,7 +24,7 @@ both the database (HANA / MS SQL) and the Service Layer OData API.
 
 ## Install
 
-Requires Node.js 18 or newer.
+Requires Node.js 20 or newer.
 
 ```bash
 npx b1-mcp-server

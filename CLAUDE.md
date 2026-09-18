@@ -186,4 +186,4 @@ scripts/
 
 ## Tech stack
 
-Node ≥18, TypeScript ES2022 with Node16 modules. Dependencies: `@modelcontextprotocol/sdk` (stdio transport), `zod` (tool schema validation), `@sap/hana-client` + `mssql` + `generic-pool` (DirectDb). Tests via `vitest`.
+Node ≥20, TypeScript ES2022 with Node16 modules. Dependencies: `@modelcontextprotocol/sdk` (stdio transport), `zod` (tool schema validation), `@sap/hana-client` + `mssql` + `generic-pool` (DirectDb). Tests via `vitest`.
