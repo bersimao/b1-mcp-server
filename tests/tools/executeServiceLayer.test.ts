@@ -142,3 +142,20 @@ describe('execute_service_layer GET result caps', () => {
     expect(text).toContain('"ItemCode": "A1"');
   });
 });
+
+describe('execute_service_layer audit engine', () => {
+  it('labels the Service Layer engine, not the DbAdapter one', async () => {
+    // An SL-only profile leaves DbAdapter at its 'hana' default. Reading the
+    // engine from there mislabelled every SL-only MS SQL audit record.
+    // capture() puts DbAdapter at 'hana', so the SL side must win.
+    const log = vi.spyOn(AuditLogger.prototype, 'log').mockImplementation(() => {});
+    const { handler, sl } = capture();
+    Object.assign(sl, { dbType: 'mssql' });
+
+    await handler({ method: 'GET', url: 'Items?$top=1' }, {});
+
+    expect(log).toHaveBeenCalled();
+    for (const [entry] of log.mock.calls) expect(entry.dbType).toBe('mssql');
+    log.mockRestore();
+  });
+});

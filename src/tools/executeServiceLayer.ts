@@ -23,7 +23,9 @@ export function registerServiceLayerTool(
   coordinator: OperationCoordinator,
 ): void {
   const dbName = () => slAdapter.getDbName() || dbAdapter.getDbName() || '(not connected)';
-  const dbType = () => dbAdapter.getDbType();
+  // The SL side's own engine: an SL-only profile leaves DbAdapter at its
+  // 'hana' default, which would mislabel an MS SQL company in the audit log.
+  const dbType = () => slAdapter.getDbType() ?? dbAdapter.getDbType();
 
   server.tool(
     'execute_service_layer',

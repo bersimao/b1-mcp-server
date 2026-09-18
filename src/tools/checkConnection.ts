@@ -71,7 +71,7 @@ No parameters required. Reports status for both connections.`,
         logger.log(logger.createEntry({
           tool: 'check_connection',
           database: slDbName,
-          dbType: adapter.getDbType(),
+          dbType: slAdapter.getDbType() ?? adapter.getDbType(),
           operation: OperationType.SELECT,
           tables: [],
           query: `GET Branches?$select=Code&$top=1`,

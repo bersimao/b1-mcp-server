@@ -8,6 +8,7 @@ import {
   type PeerCertificate,
   type TLSSocket,
 } from 'node:tls';
+import type { DbType } from '../types/index.js';
 
 // Standard TLS verification remains the default. Pinned mode is an explicit,
 // per-profile compatibility option for SAP installations with expired or
@@ -263,6 +264,7 @@ export class ServiceLayerAdapter {
   private pinnedAgent?: Agent;
   private connectionKey = '';
   private connectionGeneration = 0;
+  private dbType?: DbType;
 
   async init(config: {
     database: string;
@@ -275,6 +277,8 @@ export class ServiceLayerAdapter {
     tlsServerName?: string;
     certificateSha256?: string;
     connectionKey?: string;
+    /** Engine behind this company DB, for audit records only. */
+    dbType?: DbType;
   }): Promise<void> {
     // Clear any previous session before attempting a new login. A failed
     // reinitialisation must never leave an old target/cookie usable.
@@ -349,6 +353,7 @@ export class ServiceLayerAdapter {
     this.tlsMode = tlsMode;
     this.pinnedAgent = pinnedAgent;
     this.connectionKey = config.connectionKey || '';
+    this.dbType = config.dbType;
     this.initialised = true;
 
     const tlsDescription = tlsMode === 'pinned'
@@ -362,6 +367,7 @@ export class ServiceLayerAdapter {
   getTlsMode(): ServiceLayerTlsMode { return this.tlsMode; }
   getConnectionKey(): string { return this.connectionKey; }
   getConnectionGeneration(): number { return this.connectionGeneration; }
+  getDbType(): DbType | undefined { return this.dbType; }
   getTlsStatus(): string {
     return this.tlsMode === 'pinned'
       ? 'PINNED TLS — certificate CA, hostname and validity verification replaced by an exact SHA-256 pin'
@@ -391,6 +397,7 @@ export class ServiceLayerAdapter {
     this.cookie = '';
     this.tlsMode = 'strict';
     this.connectionKey = '';
+    this.dbType = undefined;
     this.pinnedAgent = undefined;
 
     try {

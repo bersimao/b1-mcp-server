@@ -490,6 +490,23 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(sendRequest).not.toHaveBeenCalled();
   });
 
+  it('hands the profile engine to the Service Layer adapter for audit records', async () => {
+    const ctx = setup();
+    writeProfiles(ctx.connectionsFile, [{
+      id: 'sl_only', dbType: 'mssql', dbName: 'SBO_SQL',
+      slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+    }]);
+    inspectCertificate.mockResolvedValueOnce({
+      origin: 'https://sap.example.com:50000', certificateSha256: 'CA:CERT',
+      subject: '{}', issuer: '{}', validFrom: 'now', validTo: 'later', strictTlsValid: true,
+    });
+
+    const result = await ctx.handler({ query: 'sl_only' }, { sendRequest: vi.fn() });
+
+    expect(result.isError).toBeFalsy();
+    expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({ dbType: 'mssql' }));
+  });
+
   it('ends a foreign DirectDb pool even when the target profile has no DB side', async () => {
     // The invariant behind per-side teardown: a stale side is torn down whether
     // or not the incoming profile configures it. Here nothing would ever

@@ -547,6 +547,7 @@ Use "list" as the query to reload and list all available profiles.`,
             tlsServerName: tls.tlsServerName,
             certificateSha256: tls.certificateSha256,
             connectionKey: slTargetKey,
+            dbType: profile.dbType,
           });
           const check = await slAdapter.checkConnection();
           slConnected = check.connected;
