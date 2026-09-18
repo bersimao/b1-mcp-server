@@ -194,6 +194,19 @@ describe('DirectDb — HANA', () => {
     expect(pool.released).toHaveLength(1);
   });
 
+  it('releases the connection when exec throws synchronously', async () => {
+    // The callback never runs on a synchronous throw. With max: 1, a missed
+    // release would stall every later query until acquireTimeoutMillis.
+    const { db, pool } = await connectedHana();
+    mocks.hanaClient.exec.mockImplementationOnce(() => { throw new Error('Invalid argument'); });
+
+    await expect(db.executeQuery('SELECT 1 FROM DUMMY')).rejects.toThrow('Invalid argument');
+    expect(pool.release).toHaveBeenCalledWith(mocks.hanaClient);
+
+    await expect(db.executeQuery('SELECT 1 FROM DUMMY')).resolves.toEqual([]);
+    expect(pool.released).toHaveLength(2);
+  });
+
   it('drains and clears the pool on close', async () => {
     const { db, pool } = await connectedHana();
     await db.close();
@@ -271,6 +284,31 @@ describe('DirectDb — MS SQL', () => {
 describe('DirectDb — lifecycle', () => {
   it('rejects a query before init instead of dereferencing a missing pool', async () => {
     await expect(new DirectDb().executeQuery('SELECT 1')).rejects.toThrow('not initialised');
+  });
+
+  it('closes the previous HANA pool when init runs again', async () => {
+    const { db, pool: first } = await connectedHana();
+    mocks.createPool.mockReturnValue(fakePool());
+
+    await db.init({
+      server: 'hana-host:30015', database: 'SBO_OTHER', databaseType: 'HANA',
+      username: 'SYSTEM', password: 'secret', timeout: 60_000,
+    });
+
+    expect(first.drain).toHaveBeenCalledOnce();
+    expect(first.clear).toHaveBeenCalledOnce();
+  });
+
+  it('closes the previous MS SQL pool when init switches engines', async () => {
+    const db = await connectedMssql();
+    mocks.createPool.mockReturnValue(fakePool());
+
+    await db.init({
+      server: 'hana-host:30015', database: 'SBO_OTHER', databaseType: 'HANA',
+      username: 'SYSTEM', password: 'secret', timeout: 60_000,
+    });
+
+    expect(mocks.mssqlPool.close).toHaveBeenCalledOnce();
   });
 
   it('is safe to close twice', async () => {

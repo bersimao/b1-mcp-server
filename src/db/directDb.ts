@@ -163,6 +163,9 @@ export class DirectDb implements DirectDbModule {
   private mssqlPool?: MssqlConnectionPool;
 
   async init(config: DirectDbConfig): Promise<void> {
+    // Re-init replaces the connection. DbAdapter already disconnects first, but
+    // standalone callers (scripts/) would otherwise leak the previous pool.
+    await this.close();
     this.database = config.database;
     this.isHana = config.databaseType.toUpperCase() === 'HANA';
     // DirectDb's own default, kept so an omitted timeout behaves as before.
@@ -251,15 +254,23 @@ export class DirectDb implements DirectDbModule {
     const client = await pool.acquire();
 
     return new Promise((resolve, reject) => {
-      client.exec(sql, params, (err, rows) => {
-        // Released on the error path too. A HANA statement timeout drops the
-        // socket, and hana-client reconnects transparently on next use, so
-        // returning the connection is what lets the pool survive a poisoned
-        // query instead of leaking one slot per timeout.
+      try {
+        client.exec(sql, params, (err, rows) => {
+          // Released on the error path too. A HANA statement timeout drops the
+          // socket, and hana-client reconnects transparently on next use, so
+          // returning the connection is what lets the pool survive a poisoned
+          // query instead of leaking one slot per timeout.
+          void pool.release(client);
+          if (err) reject(err);
+          else resolve(rows);
+        });
+      } catch (err) {
+        // A synchronous throw never reaches the callback. With a one-session
+        // pool, not releasing here would stall every later query until
+        // acquireTimeoutMillis.
         void pool.release(client);
-        if (err) reject(err);
-        else resolve(rows);
-      });
+        reject(err);
+      }
     });
   }
 
