@@ -534,6 +534,29 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(ctx.slInit).not.toHaveBeenCalled();
   });
 
+  it.each(['ETIMEDOUT', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENOTFOUND'])(
+    'does not spend a second timeout on legacy SNI when the host is unreachable (%s)', async code => {
+    // A different SNI cannot fix a host that never answered. Retrying used to
+    // cost a second full slTimeoutMs (60 s total) under the coordinator lock.
+    const ctx = setup();
+    new ServiceLayerTrustStore(ctx.trustFile).approve('https://sap.example.com:50000', {
+      certificateSha256: 'PINNED:CERT', serverName: 'sap-internal',
+      subject: '{"CN":"sap-internal"}', issuer: '{}', validFrom: 'now', validTo: 'later',
+    });
+    writeProfiles(ctx.connectionsFile, [{
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+      dbServer: 'db:30015', dbUser: 'db-user', dbPassword: 'db-secret',
+      slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+    }]);
+    inspectCertificate.mockRejectedValueOnce(Object.assign(new Error(`unreachable ${code}`), { code }));
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest: vi.fn() });
+
+    expect(result.content[0].text).toContain(`ServiceLayer: FAILED - unreachable ${code}`);
+    expect(inspectCertificate).toHaveBeenCalledOnce();
+    expect(ctx.slInit).not.toHaveBeenCalled();
+  });
+
   it('hands the profile engine to the Service Layer adapter for audit records', async () => {
     const ctx = setup();
     writeProfiles(ctx.connectionsFile, [{

@@ -127,7 +127,11 @@ export function inspectServiceLayerCertificate(
       servername: sniName,
       rejectUnauthorized: false,
     });
-    const timer = setTimeout(() => socket.destroy(new Error(`TLS inspection timed out after ${timeoutMs}ms`)), timeoutMs);
+    // Tagged ETIMEDOUT so callers can tell "host never answered" apart from a
+    // handshake the server rejected (see isUnreachable in connectDatabase.ts).
+    const timer = setTimeout(() => socket.destroy(Object.assign(
+      new Error(`TLS inspection timed out after ${timeoutMs}ms`), { code: 'ETIMEDOUT' },
+    )), timeoutMs);
 
     socket.once('secureConnect', () => {
       try {

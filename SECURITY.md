@@ -176,7 +176,7 @@ Both engines were measured against real servers, with a CPU-only query calibrate
 
 The HANA error text is the trap: an aborted query reports a dead connection, with no hint that a timeout caused it. MS SQL says plainly what happened.
 
-Those figures come from the original measurement on `hana-client` 2.21 / `mssql` 6.3. Both rows were re-confirmed on `@sap/hana-client` 2.29.25 / `mssql` 11.0.1 after the driver swap — same error strings, same clean pool recovery.
+Those figures come from the original measurement on `hana-client` 2.21 / `mssql` 6.3. Both rows were re-confirmed on `@sap/hana-client` 2.29.25 / `mssql` 11.0.1 after the driver swap, and again on `@sap/hana-client` 2.30.24 / `mssql` 11.0.2 (2026-09-18) — same error strings, same clean pool recovery.
 
 **Still open:** the ceiling is wall-clock, not cost. A cartesian product still gets the full 60 s of production CPU before it is cut; a true cost governor (`QUERY_GOVERNOR_COST_LIMIT`, HANA workload classes) would reject it on the optimiser's estimate, before execution.
 7. **The parser is not a full SQL parser.** It is a deliberately small classifier that denies by default. Its correctness rests on the quote/comment scanners; any change there must keep `tests/guardrails/quotedSpanEvasion.test.ts` green.

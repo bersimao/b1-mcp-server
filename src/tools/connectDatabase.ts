@@ -31,6 +31,19 @@ interface ResolvedTlsConfig {
   trustAction: 'strict' | 'existing-pin' | 'migrated-pin' | 'approved-pin' | 'replaced-pin';
 }
 
+/**
+ * Failures that happen before TLS starts, or that mean the host never answered.
+ * A different SNI name cannot change any of them, so retrying with the legacy
+ * SNI would only spend a second full slTimeoutMs while the coordinator lock
+ * freezes every other tool. ECONNRESET is deliberately absent: some virtual
+ * hosts reset the connection when the SNI is missing or unknown.
+ */
+const UNREACHABLE_CODES = new Set(['ETIMEDOUT', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'ENOTFOUND', 'EAI_AGAIN']);
+
+function isUnreachable(error: unknown): boolean {
+  return UNREACHABLE_CODES.has((error as NodeJS.ErrnoException | undefined)?.code ?? '');
+}
+
 function fingerprintEquals(left: string | undefined, right: string): boolean {
   return !!left && left.replace(/[^a-fA-F0-9]/g, '').toUpperCase() === right.replace(/[^a-fA-F0-9]/g, '').toUpperCase();
 }
@@ -75,8 +88,9 @@ async function resolveServiceLayerTls(
   } catch (error) {
     // Some virtual hosts reject a handshake that omits their historical SNI.
     // The legacy value remains a credential-free compatibility route for the
-    // pinned transport, so try it before declaring the endpoint unreachable.
-    if (profile.slTlsServerName || !legacyServerName) throw error;
+    // pinned transport, so try it before declaring the endpoint unreachable —
+    // unless the endpoint already IS unreachable, which no SNI can fix.
+    if (profile.slTlsServerName || !legacyServerName || isUnreachable(error)) throw error;
     inspection = await inspectServiceLayerCertificate(
       profile.slUrl!, config.slTimeoutMs, legacyServerName,
     );

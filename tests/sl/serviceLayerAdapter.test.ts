@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createServer, type Server, type Socket } from 'node:net';
 import {
   canonicalServiceLayerOrigin,
+  inspectServiceLayerCertificate,
   ServiceLayerAdapter,
   strictTransportCanReuseSni,
 } from '../../src/sl/serviceLayerAdapter.js';
@@ -226,5 +228,22 @@ describe('ServiceLayerAdapter secure transport', () => {
     });
 
     await expect(adapter.execute({ method: 'GET', url: 'Items' })).rejects.toThrow('exceeds 5');
+  });
+});
+
+describe('inspectServiceLayerCertificate timeout', () => {
+  it('tags a stalled handshake as ETIMEDOUT so callers can skip SNI retries', async () => {
+    // Accepts TCP and never answers the ClientHello: the black-holed-TLS case.
+    const sockets: Socket[] = [];
+    const server: Server = createServer(socket => { sockets.push(socket); });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as { port: number };
+    try {
+      await expect(inspectServiceLayerCertificate(`https://127.0.0.1:${port}/b1s/v2`, 200))
+        .rejects.toMatchObject({ code: 'ETIMEDOUT', message: 'TLS inspection timed out after 200ms' });
+    } finally {
+      sockets.forEach(socket => socket.destroy());
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
   });
 });
