@@ -490,6 +490,50 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(sendRequest).not.toHaveBeenCalled();
   });
 
+  it('does not retry with legacy SNI when the profile names its own SNI', async () => {
+    // The profile's explicit SNI outranks the trust-store fallback: a failed
+    // handshake under it is the answer, not a cue to try another name.
+    const ctx = setup();
+    new ServiceLayerTrustStore(ctx.trustFile).approve('https://sap.example.com:50000', {
+      certificateSha256: 'PINNED:CERT', serverName: 'sap-internal',
+      subject: '{"CN":"sap-internal"}', issuer: '{}', validFrom: 'now', validTo: 'later',
+    });
+    writeProfiles(ctx.connectionsFile, [{
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+      dbServer: 'db:30015', dbUser: 'db-user', dbPassword: 'db-secret',
+      slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+      slTlsServerName: 'sap-explicit',
+    }]);
+    inspectCertificate.mockRejectedValueOnce(new Error('unrecognized_name'));
+    const sendRequest = vi.fn();
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest });
+
+    expect(result.content[0].text).toContain('ServiceLayer: FAILED - unrecognized_name');
+    expect(inspectCertificate).toHaveBeenCalledOnce();
+    expect(inspectCertificate).toHaveBeenCalledWith(
+      'https://sap.example.com:50000/b1s/v2', expect.any(Number), 'sap-explicit',
+    );
+    expect(ctx.slInit).not.toHaveBeenCalled();
+    expect(sendRequest).not.toHaveBeenCalled();
+  });
+
+  it('does not retry the handshake when no legacy SNI is stored', async () => {
+    const ctx = setup();
+    writeProfiles(ctx.connectionsFile, [{
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+      dbServer: 'db:30015', dbUser: 'db-user', dbPassword: 'db-secret',
+      slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+    }]);
+    inspectCertificate.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest: vi.fn() });
+
+    expect(result.content[0].text).toContain('ServiceLayer: FAILED - ECONNREFUSED');
+    expect(inspectCertificate).toHaveBeenCalledOnce();
+    expect(ctx.slInit).not.toHaveBeenCalled();
+  });
+
   it('hands the profile engine to the Service Layer adapter for audit records', async () => {
     const ctx = setup();
     writeProfiles(ctx.connectionsFile, [{
