@@ -35,14 +35,21 @@ import { ServiceLayerTrustStore } from './security/serviceLayerTrustStore.js';
 // (published: node_modules/b1-mcp-server/dist/server.js -> ../package.json).
 const SERVER_VERSION: string = createRequire(import.meta.url)('../package.json').version;
 
+export interface CreatedServer {
+  server: McpServer;
+  /** Exposed so the entry point can disconnect both sides on shutdown. */
+  adapter: DbAdapter;
+  slAdapter: ServiceLayerAdapter;
+}
+
 /**
- * Creates, initialises, and returns the MCP server.
+ * Creates, initialises, and returns the MCP server with its adapters.
  *
  * @param directDb - A DirectDb instance (src/db/directDb.ts) or a test double.
  */
 export async function createServer(
   directDb: DirectDbModule,
-): Promise<McpServer> {
+): Promise<CreatedServer> {
   const config = loadConfig();
   const logger = new AuditLogger(config);
 
@@ -79,5 +86,5 @@ export async function createServer(
     `All tools registered. No database connected. ${profileCount} profile(s) available — use connect_database tool.`
   );
 
-  return server;
+  return { server, adapter, slAdapter };
 }

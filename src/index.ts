@@ -26,14 +26,23 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createServer } from './server.js';
 import { DirectDb } from './db/directDb.js';
+import { createShutdown } from './shutdown.js';
 
 // ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  const server = await createServer(new DirectDb());
+  const { server, adapter, slAdapter } = await createServer(new DirectDb());
   const transport = new StdioServerTransport();
+
+  // Protocol.onclose, not transport.onclose: the SDK wraps the transport's
+  // handler during connect(), and overwriting it afterwards would drop its own.
+  const shutdown = createShutdown({ adapter, slAdapter, exit: code => process.exit(code) });
+  server.server.onclose = () => void shutdown('transport closed');
+  process.stdin.once('end', () => void shutdown('stdin closed'));
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  process.once('SIGINT', () => void shutdown('SIGINT'));
 
   await server.connect(transport);
 
