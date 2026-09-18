@@ -12,6 +12,19 @@ The server starts **without** any database or Service Layer connection. The AI m
 
 End-user docs (install, connection profile shape, security posture) are in [README.md](README.md). This file is for working *on* the codebase.
 
+## Code rules
+
+Public TypeScript project (Node ESM, `vitest`). Load the `b1-mcp` skill before touching tool behaviour or guardrails, `db` for HANA / MS SQL syntax, `sl` for Service Layer / OData.
+
+**Definition of done** — never say "done" without:
+1. `npm test` green and `npx tsc --noEmit` clean.
+2. `npm audit --omit=dev` → 0 vulnerabilities (the tarball is what `npx` installs).
+3. Any change under `src/guardrails/` keeps `tests/guardrails/quotedSpanEvasion.test.ts` green and adds a regression payload for the case it fixes.
+4. Any bump of `@sap/hana-client` / `mssql` / `generic-pool` → `npx tsx scripts/validate-directdb.ts <profile> --timeouts` against one HANA and one MS SQL profile, then update the "Last run" note in the DirectDb section below. Unit tests mock the drivers and cannot catch driver breakage.
+5. Nothing to stdout except JSON-RPC; logs go to stderr. Never log passwords, cookies or raw `connections.json`.
+
+No house lint for this repo — do not invent one. Client names stay out of the public repo.
+
 ## Commands
 
 ```bash
