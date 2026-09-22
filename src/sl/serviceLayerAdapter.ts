@@ -9,6 +9,7 @@ import {
   type TLSSocket,
 } from 'node:tls';
 import type { DbType } from '../types/index.js';
+import { DEFAULT_SL_ALLOWED_METHODS, type ServiceLayerMethod } from '../security/serviceLayerPolicy.js';
 
 // Standard TLS verification remains the default. Pinned mode is an explicit,
 // per-profile compatibility option for SAP installations with expired or
@@ -269,6 +270,7 @@ export class ServiceLayerAdapter {
   private connectionKey = '';
   private connectionGeneration = 0;
   private dbType?: DbType;
+  private allowedMethods: readonly ServiceLayerMethod[] = DEFAULT_SL_ALLOWED_METHODS;
 
   async init(config: {
     database: string;
@@ -283,6 +285,7 @@ export class ServiceLayerAdapter {
     connectionKey?: string;
     /** Engine behind this company DB, for audit records only. */
     dbType?: DbType;
+    allowedMethods?: readonly ServiceLayerMethod[];
   }): Promise<void> {
     // Clear any previous session before attempting a new login. A failed
     // reinitialisation must never leave an old target/cookie usable.
@@ -358,6 +361,7 @@ export class ServiceLayerAdapter {
     this.pinnedAgent = pinnedAgent;
     this.connectionKey = config.connectionKey || '';
     this.dbType = config.dbType;
+    this.allowedMethods = config.allowedMethods ?? DEFAULT_SL_ALLOWED_METHODS;
     this.initialised = true;
 
     const tlsDescription = tlsMode === 'pinned'
@@ -372,6 +376,7 @@ export class ServiceLayerAdapter {
   getConnectionKey(): string { return this.connectionKey; }
   getConnectionGeneration(): number { return this.connectionGeneration; }
   getDbType(): DbType | undefined { return this.dbType; }
+  getAllowedMethods(): readonly ServiceLayerMethod[] { return this.allowedMethods; }
   getTlsStatus(): string {
     return this.tlsMode === 'pinned'
       ? 'PINNED TLS — certificate CA, hostname and validity verification replaced by an exact SHA-256 pin'
@@ -402,6 +407,7 @@ export class ServiceLayerAdapter {
     this.tlsMode = 'strict';
     this.connectionKey = '';
     this.dbType = undefined;
+    this.allowedMethods = DEFAULT_SL_ALLOWED_METHODS;
     this.pinnedAgent = undefined;
 
     try {

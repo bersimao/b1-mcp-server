@@ -1,7 +1,7 @@
 import { chmodSync, mkdtempSync, writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { ConnectionManager } from '../../src/config/connectionManager.js';
 
 const tempDirs: string[] = [];
@@ -55,6 +55,48 @@ describe('ConnectionManager.find', () => {
     expect(manager.find('pinned_hmg')).toMatchObject({
       slTlsMode: 'pinned', slTlsServerName: 'sap.example.com', slCertificateSha256: 'AA:BB',
     });
+  });
+
+  it('defaults slAllowedMethods to GET and PATCH and normalises an explicit list', () => {
+    const manager = createManagerWithProfiles([
+      { id: 'legacy', dbType: 'hana', dbName: 'SBO_A' },
+      { id: 'writer', dbType: 'hana', dbName: 'SBO_B', slAllowedMethods: ['get', ' POST ', 'GET', 'delete'] },
+    ]);
+
+    expect(manager.find('legacy')?.slAllowedMethods).toEqual(['GET', 'PATCH']);
+    expect(manager.find('writer')?.slAllowedMethods).toEqual(['GET', 'POST', 'DELETE']);
+  });
+
+  it.each([
+    [['PUT']],
+    [['GET', 'MERGE']],
+    [[]],
+    ['GET'],
+    [[1]],
+  ])('skips a profile with invalid slAllowedMethods %j instead of guessing', (slAllowedMethods) => {
+    const manager = createManagerWithProfiles([
+      { id: 'bad', dbType: 'hana', dbName: 'SBO_BAD', slAllowedMethods },
+      { id: 'good', dbType: 'hana', dbName: 'SBO_GOOD' },
+    ]);
+
+    expect(manager.find('bad')).toBeUndefined();
+    expect(manager.find('good')).toBeDefined();
+  });
+
+  it('never echoes a rejected dbType, slTlsMode or slAllowedMethods value to stderr', () => {
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args) => { errors.push(args.join(' ')); });
+    try {
+      createManagerWithProfiles([
+        { id: 'leaky', dbType: 'hana', dbName: 'SBO_X', slAllowedMethods: ['GET', 'hunter2-secret'] },
+        { id: 'leaky_db', dbType: 'hunter2-secret', dbName: 'SBO_Y' },
+        { id: 'leaky_tls', dbType: 'hana', dbName: 'SBO_Z', slTlsMode: 'hunter2-secret' },
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(errors.join('\n')).toContain('index 1');
+    expect(errors.join('\n')).not.toContain('hunter2-secret');
   });
 
   it('fails closed when a profile declares an unknown TLS mode', () => {

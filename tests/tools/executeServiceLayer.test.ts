@@ -11,7 +11,7 @@ import { registerServiceLayerTool } from '../../src/tools/executeServiceLayer.js
 const config: Config = {
   connectionsFile: '', maxQueryLength: 8000, auditLogPath: '', logLevel: 'error',
   rateLimitMaxCalls: 100, rateLimitWindowMs: 60000, queryTimeoutMs: 60000,
-  slTimeoutMs: 30000, slTrustFile: '', slMaxUrlLength: 2048, slMaxBodyChars: 50000, slPatchEnabled: true,
+  slTimeoutMs: 30000, slTrustFile: '', slMaxUrlLength: 2048, slMaxBodyChars: 50000, slWritesEnabled: true,
   elicitationTimeoutMs: 120000,
   maxResultRows: 500, maxResultChars: 100000, dryRun: false,
 };
@@ -72,7 +72,7 @@ describe('execute_service_layer PATCH approval', () => {
   });
 
   it('never executes PATCH in dry-run or with the kill switch off', async () => {
-    for (const overrides of [{ dryRun: true }, { slPatchEnabled: false }]) {
+    for (const overrides of [{ dryRun: true }, { slWritesEnabled: false }]) {
       const ctx = capture(overrides);
       const result = await ctx.handler({ method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }, accept);
       expect(ctx.execute).not.toHaveBeenCalled();
@@ -109,6 +109,55 @@ describe('execute_service_layer PATCH approval', () => {
     );
     expect(result.isError).toBe(true);
     expect(ctx.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('execute_service_layer method allowlist', () => {
+  it('denies a verb the profile does not allow, before approval or execution', async () => {
+    const ctx = capture();
+    const sendRequest = vi.fn();
+    const result = await ctx.handler({ method: 'POST', url: 'Orders', body: { CardCode: 'C1' } }, { sendRequest });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("not in this profile's slAllowedMethods (GET, PATCH)");
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(ctx.execute).not.toHaveBeenCalled();
+  });
+
+  it('denies even GET on a profile that does not list it', async () => {
+    const ctx = capture();
+    Object.assign(ctx.sl, { allowedMethods: ['PATCH'] });
+    const result = await ctx.handler({ method: 'GET', url: 'Items' }, {});
+    expect(result.isError).toBe(true);
+    expect(ctx.execute).not.toHaveBeenCalled();
+  });
+
+  it('runs an allowed POST and DELETE only after explicit approval', async () => {
+    const ctx = capture();
+    Object.assign(ctx.sl, { allowedMethods: ['GET', 'POST', 'DELETE'] });
+    const approve = { sendRequest: vi.fn().mockResolvedValue({ action: 'accept', content: { approve: true } }) };
+
+    await ctx.handler({ method: 'POST', url: 'Orders(7)/Close' }, approve);
+    await ctx.handler({ method: 'DELETE', url: "Items('A1')" }, approve);
+
+    expect(approve.sendRequest).toHaveBeenCalledTimes(2);
+    expect(approve.sendRequest.mock.calls[0][0].params.message).toContain('Approve SAP Business One POST?');
+    expect(approve.sendRequest.mock.calls[1][0].params.message).toContain('Body: (none)');
+    expect(ctx.execute).toHaveBeenNthCalledWith(1, { method: 'POST', url: 'Orders(7)/Close', data: undefined });
+    expect(ctx.execute).toHaveBeenNthCalledWith(2, { method: 'DELETE', url: "Items('A1')", data: undefined });
+  });
+
+  it('never runs POST or DELETE on decline, dry-run or with the kill switch off', async () => {
+    const decline = { sendRequest: vi.fn().mockResolvedValue({ action: 'decline' }) };
+    for (const [overrides, extra] of [[{}, decline], [{ dryRun: true }, accept], [{ slWritesEnabled: false }, accept]] as const) {
+      for (const args of [{ method: 'POST', url: 'Orders', body: { CardCode: 'C1' } }, { method: 'DELETE', url: 'Items(1)' }]) {
+        const ctx = capture(overrides);
+        Object.assign(ctx.sl, { allowedMethods: ['GET', 'POST', 'DELETE'] });
+        const result = await ctx.handler(args, extra);
+        expect(ctx.execute).not.toHaveBeenCalled();
+        expect(result.content[0].text).toMatch(/not approved|DRY RUN|disabled/);
+      }
+    }
   });
 });
 

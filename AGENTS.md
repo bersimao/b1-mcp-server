@@ -11,7 +11,7 @@ Read [CLAUDE.md](CLAUDE.md) first; this file is the checklist a reviewer applies
 5. **Both engines.** HANA and MS SQL syntax differ (`DO BEGIN` vs `BEGIN`, catalog views, `CALL` vs `EXEC`). A feature that handles one must handle the other or say why not.
 6. **Driver bumps need the real-server harness.** Unit tests mock the drivers. Any bump of `@sap/hana-client`, `mssql` or `generic-pool` needs `scripts/validate-directdb.ts` run against real servers and the "Last run" note updated.
 7. **Result caps announce truncation.** `src/tools/formatResult.ts` is the single renderer; a partial result without a leading `[TRUNCATED: …]` note is a bug.
-8. **Elicitation fails closed.** PATCH and certificate approval require an explicit `accept`; a missing or unsupported elicitation is a denial, never a default yes.
+8. **Elicitation fails closed.** Service Layer writes and certificate approval require an explicit `accept`; a missing or unsupported elicitation is a denial, never a default yes.
 9. **Tests + typecheck.** `npm test` and `npx tsc --noEmit` clean. `npm audit --omit=dev` at 0.
 
 ## Known debt — do NOT report these

@@ -7,6 +7,14 @@ import { createHash } from 'crypto';
 const VALIDATION_ROOT_PATH = '/configured-service-layer-root/';
 const VALIDATION_ROOT_URL = `https://mcp.invalid${VALIDATION_ROOT_PATH}`;
 
+/** Every verb execute_service_layer can speak. PUT is absent on purpose: it
+ *  replaces the whole entity, so any field the body omits is wiped. */
+export const SERVICE_LAYER_METHODS = ['GET', 'PATCH', 'POST', 'DELETE'] as const;
+export type ServiceLayerMethod = typeof SERVICE_LAYER_METHODS[number];
+
+/** Allowed verbs for a profile without slAllowedMethods — the pre-allowlist behaviour. */
+export const DEFAULT_SL_ALLOWED_METHODS: readonly ServiceLayerMethod[] = ['GET', 'PATCH'];
+
 export interface ValidatedServiceLayerRequest {
   url: string;
   bodyJson?: string;
@@ -23,7 +31,7 @@ function decodePath(path: string): string {
 }
 
 export function validateServiceLayerRequest(
-  method: 'GET' | 'PATCH',
+  method: ServiceLayerMethod,
   rawUrl: string,
   body: Record<string, unknown> | undefined,
   limits: { maxUrlLength: number; maxBodyChars: number },
@@ -53,25 +61,37 @@ export function validateServiceLayerRequest(
     throw new Error('This Service Layer endpoint is not permitted.');
   }
 
+  const keyedEntity = /^[A-Za-z_][A-Za-z0-9_]*\(.+\)$/;
+  if (method === 'PATCH' || method === 'DELETE') {
+    if (parsed.search || endpoint.includes('/')) {
+      throw new Error(`${method} requires one directly keyed entity endpoint without navigation or query options.`);
+    }
+    if (!keyedEntity.test(endpoint)) {
+      throw new Error(`${method} requires a keyed entity endpoint such as BusinessPartners('C0001').`);
+    }
+  } else if (method === 'POST') {
+    // An entity set or service operation (Orders, CompanyService_GetCompanyInfo),
+    // or one bound action on a keyed entity (Orders(12)/Close). The key accepts
+    // quoted spans verbatim but no bare ( ) / outside them, so a longer
+    // navigation such as A(1)/B(2)/C cannot pass as one key.
+    if (parsed.search || !/^[A-Za-z_][A-Za-z0-9_]*(?:\((?:'(?:[^']|'')*'|[^'()/])+\)\/[A-Za-z_][A-Za-z0-9_]*)?$/.test(endpoint)) {
+      throw new Error('POST requires an entity set, a service operation, or a keyed entity action such as Orders(12)/Close, without query options.');
+    }
+  }
+
   if (method === 'PATCH') {
-    if (parsed.search || parsed.hash || endpoint.includes('/')) {
-      throw new Error('PATCH requires one directly keyed entity endpoint without navigation or query options.');
-    }
-    if (!/^[A-Za-z_][A-Za-z0-9_]*\(.+\)$/.test(endpoint)) {
-      throw new Error('PATCH requires a keyed entity endpoint such as BusinessPartners(\'C0001\').');
-    }
     if (!body || Object.keys(body).length === 0) {
       throw new Error('PATCH requires a non-empty JSON object body.');
     }
-  } else if (body !== undefined) {
-    throw new Error('GET requests must not include a body.');
+  } else if ((method === 'GET' || method === 'DELETE') && body !== undefined) {
+    throw new Error(`${method} requests must not include a body.`);
   }
 
   if (!body) return { url, fields: [] };
 
   const bodyJson = JSON.stringify(body);
   if (bodyJson.length > limits.maxBodyChars) {
-    throw new Error(`PATCH body exceeds ${limits.maxBodyChars} characters.`);
+    throw new Error(`${method} body exceeds ${limits.maxBodyChars} characters.`);
   }
 
   return {

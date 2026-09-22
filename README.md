@@ -80,7 +80,8 @@ Example `~/.claude/connections.json`:
     "dbPassword": "•••",
     "slUrl": "https://10.0.0.10:50000/b1s/v2",
     "slUser": "manager",
-    "slPassword": "•••"
+    "slPassword": "•••",
+    "slAllowedMethods": ["GET", "PATCH", "POST"]
   },
   {
     "id": "client_b_hmg",
@@ -101,8 +102,19 @@ avoiding an unnecessary failure that may count toward account lockout under the
 configured login policy. Non-empty password strings are passed through without
 trimming. Either side, or both sides, can be configured in one profile.
 
+`slAllowedMethods` (optional) lists the HTTP verbs `execute_service_layer` may
+send for that profile: any of `GET`, `PATCH`, `POST`, `DELETE`
+(case-insensitive). Without it a profile keeps the historic `["GET", "PATCH"]`;
+`["GET"]` makes a profile read-only. `PUT` is not supported, because it
+replaces the whole entity and wipes every field the body omits. An invalid
+value (unknown verb, empty list, not an array) skips that profile instead of
+guessing. The list is applied on connect and printed by `connect_database`;
+editing it re-logs the Service Layer on the next `connect_database` call.
+Allowing a write verb does not waive approval: every write still needs the
+per-call human acceptance described under the security posture.
+
 Both SAP Service Layer roots are supported: `/b1s/v1` for OData v3 and
-`/b1s/v2` for OData v4. Login, health checks and relative GET/PATCH requests
+`/b1s/v2` for OData v4. Login, health checks and relative Service Layer requests
 use the exact root configured by the profile. Request validation is
 version-neutral; callers pass only the relative endpoint (for example,
 `Items?$select=ItemCode&$top=1`). OData query and payload differences remain
@@ -223,7 +235,7 @@ your MCP configuration, which the client passes to the spawned process:
       "args": ["-y", "b1-mcp-server"],
       "env": {
         "MCP_QUERY_TIMEOUT_MS": "120000",
-        "MCP_SL_PATCH_ENABLED": "false"
+        "MCP_SL_WRITES_ENABLED": "false"
       }
     }
   }
@@ -246,12 +258,12 @@ found regardless of where `npx` runs from.
 | `MCP_SL_TIMEOUT_MS` | `30000` | Service Layer login/request timeout |
 | `MCP_SL_TRUST_FILE` | `~/.claude/service-layer-trust.json` | Local non-secret certificate trust store |
 | `MCP_SL_MAX_URL_LENGTH` | `2048` | Maximum relative OData URL length |
-| `MCP_SL_MAX_BODY_CHARS` | `50000` | Maximum serialised PATCH body length |
-| `MCP_SL_PATCH_ENABLED` | `true` | Emergency PATCH kill switch; `true`/`false` are case-insensitive and invalid values disable writes |
-| `MCP_ELICITATION_TIMEOUT_MS` | `120000` | How long a human gets to answer an approval form (certificate trust, PATCH) before it fails closed |
+| `MCP_SL_MAX_BODY_CHARS` | `50000` | Maximum serialised PATCH/POST body length |
+| `MCP_SL_WRITES_ENABLED` | `true` | Emergency kill switch for **every** Service Layer write (PATCH, POST, DELETE); `true`/`false` are case-insensitive and invalid values disable writes. Replaces `MCP_SL_PATCH_ENABLED`, which is no longer read — except that any value other than `true` in the old name still disables writes, so an upgrade never re-opens them |
+| `MCP_ELICITATION_TIMEOUT_MS` | `120000` | How long a human gets to answer an approval form (certificate trust, Service Layer write) before it fails closed |
 | `MCP_MAX_RESULT_ROWS` | `500` | Max rows returned to the model; extra rows are cut and announced |
 | `MCP_MAX_RESULT_CHARS` | `100000` | Max characters of result JSON, applied after the row cap |
-| `MCP_DRY_RUN` | `false` | The exact value `true` validates raw SQL and PATCH without executing them; connections and Service Layer GET still run |
+| `MCP_DRY_RUN` | `false` | The exact value `true` validates raw SQL and Service Layer writes without executing them; connections and Service Layer GET still run |
 
 The numeric limits above must be positive integers. An unset or whitespace-only
 value uses the default. Any other invalid value (including `0`, a negative or a
@@ -278,12 +290,15 @@ unterminated quotes or brackets, sequence advancement (`NEXTVAL` /
 `XLOCK`, `TABLOCK`, `TABLOCKX`, `HOLDLOCK`, `SERIALIZABLE`,
 `REPEATABLEREAD`).
 
-Service Layer requests allow `GET` and guarded `PATCH` only. `POST` / `PUT` /
-`DELETE` are blocked. PATCH requires one directly keyed entity endpoint and an
-explicit user acceptance through MCP form elicitation. The approval screen is
-bound to the database, Service Layer root, endpoint, exact body, field list and SHA-256 body hash.
-A client without elicitation support cannot PATCH. `MCP_DRY_RUN=true` never
-executes PATCH, and `MCP_SL_PATCH_ENABLED=false` disables it globally.
+Service Layer requests allow only the verbs in the profile's `slAllowedMethods`
+(default `GET` and `PATCH`); `PUT` is never available. PATCH and DELETE require
+one directly keyed entity endpoint; POST accepts an entity set, a service
+operation or one action on a keyed entity (`Orders(12)/Close`); writes take no
+query options. Every write requires explicit user acceptance through MCP form
+elicitation. The approval screen is bound to the database, Service Layer root,
+endpoint, exact body, field list and SHA-256 body hash. A client without
+elicitation support cannot write. `MCP_DRY_RUN=true` never executes a write,
+and `MCP_SL_WRITES_ENABLED=false` disables every write globally.
 
 The per-table classification model (SAP_CORE / SAP_USER / CUSTOM / TEMP with
 per-operation rules) still exists in `src/guardrails/rules/` and is fully

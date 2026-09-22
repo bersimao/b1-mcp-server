@@ -41,16 +41,16 @@ export interface Config {
   /** Maximum relative Service Layer URL length. */
   slMaxUrlLength: number;
 
-  /** Maximum serialised PATCH body length. */
+  /** Maximum serialised PATCH/POST body length. */
   slMaxBodyChars: number;
 
-  /** Emergency kill switch for Service Layer PATCH. */
-  slPatchEnabled: boolean;
+  /** Emergency kill switch for every Service Layer write (PATCH, POST, DELETE). */
+  slWritesEnabled: boolean;
 
   /**
-   * How long a human gets to answer an approval form (certificate trust, PATCH)
-   * before the request fails closed. The SDK's own default is 60 s, which is
-   * short for someone actually reading a PATCH body before accepting it.
+   * How long a human gets to answer an approval form (certificate trust,
+   * Service Layer write) before the request fails closed. The SDK's own default
+   * is 60 s, which is short for someone actually reading a body before accepting it.
    */
   elicitationTimeoutMs: number;
 
@@ -60,7 +60,7 @@ export interface Config {
   /** Max characters of rendered result JSON, after the row cap. */
   maxResultChars: number;
 
-  /** Dry-run mode: validate raw SQL and PATCH but don't execute them. */
+  /** Dry-run mode: validate raw SQL and Service Layer writes but don't execute them. */
   dryRun: boolean;
 }
 
@@ -108,11 +108,25 @@ function logLevelEnv(): Config['logLevel'] {
 }
 
 /**
- * Reads the PATCH emergency switch. Invalid values fail closed because an
- * operator typo must never leave Service Layer writes enabled unexpectedly.
+ * Reads the Service Layer write emergency switch. Invalid values fail closed
+ * because an operator typo must never leave writes enabled unexpectedly.
  */
-function slPatchEnabledEnv(): boolean {
-  const raw = process.env.MCP_SL_PATCH_ENABLED;
+function slWritesEnabledEnv(): boolean {
+  // Renamed from MCP_SL_PATCH_ENABLED once POST/DELETE joined PATCH. The old
+  // name is no longer read, except that a value other than "true" still
+  // disables writes: an operator who switched writes off must not have them
+  // silently re-opened by an upgrade that stopped reading their setting.
+  const legacy = process.env.MCP_SL_PATCH_ENABLED;
+  if (legacy !== undefined && legacy.trim() !== '') {
+    const legacyDisables = legacy.trim().toLowerCase() !== 'true';
+    console.error(
+      '[config] MCP_SL_PATCH_ENABLED was renamed to MCP_SL_WRITES_ENABLED' +
+      (legacyDisables ? '; its value still disables Service Layer writes until you rename it.' : ' and is ignored.'),
+    );
+    if (legacyDisables) return false;
+  }
+
+  const raw = process.env.MCP_SL_WRITES_ENABLED;
   if (raw === undefined || raw.trim() === '') return true;
 
   const normalized = raw.trim().toLowerCase();
@@ -120,7 +134,7 @@ function slPatchEnabledEnv(): boolean {
   if (normalized === 'false') return false;
 
   console.error(
-    `[config] MCP_SL_PATCH_ENABLED="${raw}" is not "true" or "false" — disabling PATCH.`,
+    `[config] MCP_SL_WRITES_ENABLED="${raw}" is not "true" or "false" — disabling Service Layer writes.`,
   );
   return false;
 }
@@ -158,7 +172,7 @@ export function loadConfig(): Config {
 
     slMaxBodyChars: positiveIntEnv('MCP_SL_MAX_BODY_CHARS', 50_000),
 
-    slPatchEnabled: slPatchEnabledEnv(),
+    slWritesEnabled: slWritesEnabledEnv(),
 
     elicitationTimeoutMs: positiveIntEnv('MCP_ELICITATION_TIMEOUT_MS', 120_000),
 

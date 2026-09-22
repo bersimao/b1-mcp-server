@@ -19,7 +19,8 @@
 //       "slPassword": "password",                  // optional
 //       "slTlsMode": "pinned",                     // legacy migration only
 //       "slTlsServerName": "sap.example.com",      // optional pinned-TLS SNI name
-//       "slCertificateSha256": "AA:BB:..."          // legacy migration only
+//       "slCertificateSha256": "AA:BB:...",         // legacy migration only
+//       "slAllowedMethods": ["GET", "PATCH"]       // optional; default GET+PATCH
 //     }
 //   ]
 //
@@ -29,12 +30,37 @@ import { readFileSync, statSync } from 'fs';
 import { resolve } from 'path';
 import { homedir } from 'os';
 import { DbType } from '../types/index.js';
+import {
+  DEFAULT_SL_ALLOWED_METHODS,
+  SERVICE_LAYER_METHODS,
+  type ServiceLayerMethod,
+} from '../security/serviceLayerPolicy.js';
+
+function parseSlAllowedMethods(value: unknown): ServiceLayerMethod[] {
+  if (value === undefined || value === null) return [...DEFAULT_SL_ALLOWED_METHODS];
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('slAllowedMethods must be a non-empty array, e.g. ["GET", "PATCH"].');
+  }
+  const methods = new Set<ServiceLayerMethod>();
+  for (const [index, item] of value.entries()) {
+    const method = typeof item === 'string' ? item.trim().toUpperCase() : '';
+    if (!(SERVICE_LAYER_METHODS as readonly string[]).includes(method)) {
+      throw new Error(
+        `Invalid slAllowedMethods entry at index ${index}. Expected one of ${SERVICE_LAYER_METHODS.join(', ')}.`,
+      );
+    }
+    methods.add(method as ServiceLayerMethod);
+  }
+  return [...methods];
+}
 
 function parseSlTlsMode(value: unknown): 'strict' | 'pinned' | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   const mode = String(value).trim().toLowerCase();
   if (mode === 'strict' || mode === 'pinned') return mode;
-  throw new Error(`Invalid slTlsMode "${mode}". Expected "strict" or "pinned".`);
+  // Rejected values are never echoed: this error reaches stderr, and a
+  // mis-pasted value in a credentials file may well be a secret.
+  throw new Error('Invalid slTlsMode. Expected "strict" or "pinned".');
 }
 
 function requiredTrimmedString(value: unknown, field: string): string {
@@ -62,7 +88,7 @@ function optionalPassword(value: unknown, field: string): string | undefined {
 function parseDbType(value: unknown): DbType {
   const normalized = requiredTrimmedString(value, 'dbType').toLowerCase();
   if (normalized === 'hana' || normalized === 'mssql') return normalized;
-  throw new Error(`Invalid dbType "${normalized}". Expected "hana" or "mssql".`);
+  throw new Error('Invalid dbType. Expected "hana" or "mssql".');
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +116,9 @@ export interface ConnectionProfile {
   slTlsServerName?: string;
   /** Exact peer-certificate SHA-256 fingerprint required by pinned mode. */
   slCertificateSha256?: string;
+  /** HTTP verbs execute_service_layer may send for this profile. Every non-GET
+   *  verb still requires human approval per call. */
+  slAllowedMethods: ServiceLayerMethod[];
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +183,7 @@ export class ConnectionManager {
             slTlsMode: parseSlTlsMode(raw.slTlsMode),
             slTlsServerName: optionalTrimmedString(raw.slTlsServerName, 'slTlsServerName'),
             slCertificateSha256: optionalTrimmedString(raw.slCertificateSha256, 'slCertificateSha256'),
+            slAllowedMethods: parseSlAllowedMethods(raw.slAllowedMethods),
           });
         } catch (err: any) {
           const label = typeof p === 'object' && p !== null && 'id' in p

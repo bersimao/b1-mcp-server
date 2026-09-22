@@ -44,6 +44,7 @@ function slConnectionKey(profile: Record<string, unknown>): string {
   return createHash('sha256').update(JSON.stringify([
     profile.id, profile.dbName, profile.slUrl, profile.slUser, profile.slPassword,
     profile.slTlsMode, profile.slTlsServerName, profile.slCertificateSha256,
+    [...((profile.slAllowedMethods as string[] | undefined) ?? ['GET', 'PATCH'])].sort(),
   ])).digest('hex');
 }
 
@@ -79,7 +80,7 @@ function setup() {
     connectionsFile, auditLogPath: '', logLevel: 'error', maxQueryLength: 8000,
     rateLimitMaxCalls: 100, rateLimitWindowMs: 60000, queryTimeoutMs: 60000,
     slTimeoutMs: 30000, slTrustFile: trustFile, slMaxUrlLength: 2048,
-    slMaxBodyChars: 50000, slPatchEnabled: true, elicitationTimeoutMs: 120000, maxResultRows: 500,
+    slMaxBodyChars: 50000, slWritesEnabled: true, elicitationTimeoutMs: 120000, maxResultRows: 500,
     maxResultChars: 100000, dryRun: false,
   };
   let handler!: (args: { query: string }, extra: any) => Promise<any>;
@@ -250,6 +251,30 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(ctx.slInit).not.toHaveBeenCalled();
     expect(ctx.sl.isConnected()).toBe(true);
     expect(result.content[0].text).toContain('ServiceLayer: Connected');
+  });
+
+  it('re-logs the Service Layer when only slAllowedMethods changes, and applies the new list', async () => {
+    // The allowlist lives on the session. Narrowing it in the profile file
+    // must take effect on the next connect, not linger until a restart.
+    const ctx = setup();
+    const profile = {
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+      slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+    };
+    Object.assign(ctx.sl, {
+      dbName: 'SBO_CLIENT', slUrl: profile.slUrl, cookie: 'B1SESSION=live',
+      initialised: true, connectionKey: slConnectionKey(profile),
+    });
+    inspectCertificate.mockResolvedValue({
+      origin: 'https://sap.example.com:50000', certificateSha256: 'AA:BB',
+      subject: '{}', issuer: '{}', validFrom: 'now', validTo: 'later',
+      strictTlsValid: true,
+    });
+    writeProfiles(ctx.connectionsFile, [{ ...profile, slAllowedMethods: ['get'] }]);
+
+    await ctx.handler({ query: 'client_hmg' }, { sendRequest: vi.fn() });
+
+    expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({ allowedMethods: ['GET'] }));
   });
 
   it('ends the Service Layer session once the profile stops configuring it', async () => {

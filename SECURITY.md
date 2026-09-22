@@ -18,7 +18,7 @@ The DirectDb/SQL path executes **only** `SELECT`, plus anonymous blocks whose st
 
 Writes are the human's job: the AI produces the SQL and a person runs it in a real DB client (HANA Studio / DBeaver / hdbsql), where a human can review the statement and control its transaction handling. This is deliberate: the MCP SQL path is an inspection interface, not an AI-controlled data-mutation channel.
 
-The Service Layer path allows `GET` and guarded `PATCH`. PATCH is permitted only for one directly keyed entity after the client presents the exact database, Service Layer root, endpoint, fields, body and body hash to the user and receives explicit acceptance through MCP form elicitation. Clients without elicitation support fail closed. `POST`, `PUT` and `DELETE` are blocked server-side.
+The Service Layer path allows only the verbs listed in the profile's `slAllowedMethods` — default `GET` and guarded `PATCH`; a profile may also opt in to `POST` and `DELETE`, or narrow itself to `GET`. Every write is permitted only after the client presents the exact database, Service Layer root, endpoint, fields, body and body hash to the user and receives explicit acceptance through MCP form elicitation. Clients without elicitation support fail closed. `PUT` is never available.
 
 ## Tools
 
@@ -26,7 +26,7 @@ The Service Layer path allows `GET` and guarded `PATCH`. PATCH is permitted only
 |---|---|---|
 | `connect_database` | Connect the DB and/or Service Layer sides configured by a profile | Low — passwords are sent only to the configured endpoint and are not deliberately returned through MCP |
 | `execute_sql` | `SELECT` only (incl. read-only anonymous blocks) | Low |
-| `execute_service_layer` | OData `GET` / human-approved keyed `PATCH` | **Medium — PATCH remains a real write** |
+| `execute_service_layer` | OData `GET` / human-approved `PATCH`, and `POST` / `DELETE` where the profile opts in | **Medium–High — approved writes are real writes** |
 | `get_schema_info` | Catalog metadata | Low |
 | `check_connection` | Health pings | None |
 
@@ -89,7 +89,7 @@ On the live read-only server this classification feeds the audit log; the per-op
 
 ### Layer 8 — Connection and operation serialization
 
-Connection switching and every DB/Service Layer operation share one coordinator. Only one client-database operation runs at a time. Teardown is per side: a healthy side whose connection key still matches the selected profile remains active, while a stale or non-matching side is disconnected before replacement. PATCH captures its target before approval and re-checks it immediately before execution; a profile change cancels the write. DirectDb pools are closed before reinitialization.
+Connection switching and every DB/Service Layer operation share one coordinator. Only one client-database operation runs at a time. Teardown is per side: a healthy side whose connection key still matches the selected profile remains active, while a stale or non-matching side is disconnected before replacement. A write captures its target before approval and re-checks it immediately before execution; a profile change cancels the write. DirectDb pools are closed before reinitialization.
 
 ### Layer 9 — Service Layer write controls
 
@@ -99,10 +99,11 @@ Connection switching and every DB/Service Layer operation share one coordinator.
 - The adapter always refuses `NODE_TLS_REJECT_UNAUTHORIZED=0`; there is no global insecure-TLS mode.
 - Relative canonical paths only; no traversal, Login/Logout or `$batch`.
 - Relative-path validation is version-neutral; the adapter preserves the profile's `/b1s/v1` or `/b1s/v2` root exactly.
-- PATCH must target one directly keyed entity with no navigation or query options.
-- Explicit user form elicitation bound to target, exact body and SHA-256 hash.
+- Per-profile verb allowlist (`slAllowedMethods`, default `GET` + `PATCH`), checked before validation and approval. An invalid list skips the profile. The list is part of the Service Layer connection key, so editing it forces a re-login that applies it.
+- PATCH and DELETE must target one directly keyed entity with no navigation or query options. POST must target an entity set, a service operation, or one action on a keyed entity, with no query options. `PUT` is not offered.
+- Explicit user form elicitation for every write, bound to target, exact body and SHA-256 hash.
 - Fail-closed when elicitation is unavailable, declined or cancelled.
-- Emergency `MCP_SL_PATCH_ENABLED=false` kill switch; parsing is case-insensitive and malformed values fail closed by disabling PATCH.
+- Emergency `MCP_SL_WRITES_ENABLED=false` kill switch covering every write verb; parsing is case-insensitive and malformed values fail closed by disabling writes. The former `MCP_SL_PATCH_ENABLED` is no longer read, but any value other than `true` in it still disables writes so an upgrade cannot re-open them.
 - Dry-run validates and previews but never writes.
 - Bounded URL, body, response and request time.
 
@@ -115,7 +116,7 @@ A sliding-window limiter per tool prevents AI runaway loops. Configurable via `M
 Profile connection attempts and guarded SQL, schema, health-check and Service
 Layer work are written as JSON Lines to the configured audit file. SQL and
 Service Layer policy denials are included; allowed SQL/Service Layer intent is
-logged before execution, followed by a completion or failure record. PATCH
+logged before execution, followed by a completion or failure record. Write
 audit records the endpoint, field names and exact-body SHA-256 hash without
 recording field values or session cookies. Approval, completion and failure are
 logged separately. Rate-limit rejections, `connect_database` profile listing,
@@ -150,7 +151,7 @@ JSON-RPC.
 
 ## Dry-run mode
 
-The exact value `MCP_DRY_RUN=true` validates raw SQL and Service Layer PATCH without executing them. Connections, health checks, schema reads and Service Layer GET still execute. Useful for testing write/policy decisions against a new environment.
+The exact value `MCP_DRY_RUN=true` validates raw SQL and Service Layer writes without executing them. Connections, health checks, schema reads and Service Layer GET still execute. Useful for testing write/policy decisions against a new environment.
 
 ## Known limitations
 
@@ -158,7 +159,7 @@ Stated explicitly, because a security document that omits them is worse than non
 
 1. **No authentication at the MCP layer.** Anything that can speak stdio to this process can list profiles and connect to any of them, production included. That is inherent to local stdio MCP: the OS user account and the permissions on `connections.json` are the actual boundary.
 2. **Credential handling is not a universal redaction boundary.** The server does not deliberately interpolate profile passwords into responses or audit fields, but database-driver and Service Layer error messages are returned and audited verbatim for diagnosis. It also cannot stop an AI host with unrestricted shell/filesystem tools from opening an owner-readable `connections.json`. Managed hooks and sandbox denies reduce these risks but are not equivalent to a dedicated redaction layer or separate OS identity.
-3. **Service Layer `PATCH` remains a powerful write after approval.** Entity fields are not allow-listed by design. The boundary is explicit human approval of the exact target/body plus SAP Business One authorization for the configured account. A careless approval can still damage business data; set `MCP_SL_PATCH_ENABLED=false` if this residual risk is unacceptable.
+3. **Service Layer writes remain powerful after approval.** Entity fields and POST targets are not allow-listed by design; a POST can create documents or run actions such as `Cancel` / `Close`, and a DELETE cannot be undone. The boundary is the per-profile verb allowlist, explicit human approval of the exact target/body, and SAP Business One authorization for the configured account. A careless approval can still damage business data; keep production profiles at the narrowest `slAllowedMethods` they need, and set `MCP_SL_WRITES_ENABLED=false` if this residual risk is unacceptable.
 4. **Pinned TLS accepts an expired or self-signed certificate by exact fingerprint.** This preserves encryption and resists an unpinned intermediary, but first approval is trust-on-first-use and cannot prove that an intermediary was absent. It also cannot provide the lifecycle assurance of a valid CA-issued certificate. If the certificate's private key is compromised, the pin no longer protects the connection. Prefer certificate renewal whenever possible.
 5. **`get_schema_info` does not pass through the guardrail engine.** It is the one SQL path with no net under it. The queries are fixed catalog SELECTs and the caller's `filter` is bound as a `?` parameter, never interpolated (`tests/tools/schemaIntrospection.test.ts` fails if that changes), so it carries no injection surface of its own — but it is still SQL that no rule inspects.
 6. **Read-only is not the same as harmless.** Partly addressed: high-impact lock hints (`UPDLOCK`, `XLOCK`, `TABLOCK`, `TABLOCKX`, `HOLDLOCK`, `SERIALIZABLE`, `REPEATABLEREAD`) are denied because they can strengthen or retain locks while a query runs, blocking real B1 users for up to the query ceiling. Other locking/isolation hints remain allowed for compatibility, but they are not "lock-free": Microsoft documents that `NOLOCK` / `READUNCOMMITTED` still take schema-stability locks, `READCOMMITTEDLOCK` requests shared locking, `READPAST` skips row locks but not page locks, and `ROWLOCK` / `PAGLOCK` select lock granularity. See [Microsoft's table-hint reference](https://learn.microsoft.com/en-us/sql/t-sql/queries/hints-transact-sql-table). HANA's `SELECT ... FOR UPDATE` is caught by the write-keyword fail-safe. Results are capped at `MCP_MAX_RESULT_ROWS` rows then `MCP_MAX_RESULT_CHARS` characters, with truncation always announced. Query cost is bounded by `MCP_QUERY_TIMEOUT_MS` (default 60 s), handed to `DirectDb.init()`: HANA maps it to `communicationTimeout`, MS SQL to `connectionTimeout` + `requestTimeout`. This is the only limit that stops the *work* rather than the *output* — the row cap applies after the database has already computed the result.

@@ -22,6 +22,7 @@ const NUMERIC_VARS = [
   'MCP_SL_MAX_URL_LENGTH',
   'MCP_SL_MAX_BODY_CHARS',
   'MCP_SL_PATCH_ENABLED',
+  'MCP_SL_WRITES_ENABLED',
   'MCP_ELICITATION_TIMEOUT_MS',
   'MCP_MAX_RESULT_ROWS',
   'MCP_MAX_RESULT_CHARS',
@@ -58,7 +59,7 @@ describe('loadConfig — numeric limits fail closed', () => {
     expect(config.slTrustFile).toContain('service-layer-trust.json');
     expect(config.slMaxUrlLength).toBe(2048);
     expect(config.slMaxBodyChars).toBe(50000);
-    expect(config.slPatchEnabled).toBe(true);
+    expect(config.slWritesEnabled).toBe(true);
     expect(config.elicitationTimeoutMs).toBe(120000);
     expect(config.maxResultRows).toBe(500);
     expect(config.maxResultChars).toBe(100000);
@@ -73,7 +74,7 @@ describe('loadConfig — numeric limits fail closed', () => {
     process.env.MCP_SL_TRUST_FILE = '/tmp/custom-sl-trust.json';
     process.env.MCP_SL_MAX_URL_LENGTH = '512';
     process.env.MCP_SL_MAX_BODY_CHARS = '1000';
-    process.env.MCP_SL_PATCH_ENABLED = 'false';
+    process.env.MCP_SL_WRITES_ENABLED = 'false';
     process.env.MCP_ELICITATION_TIMEOUT_MS = '90000';
     process.env.MCP_MAX_RESULT_ROWS = '50';
     process.env.MCP_MAX_RESULT_CHARS = '2000';
@@ -87,24 +88,42 @@ describe('loadConfig — numeric limits fail closed', () => {
     expect(config.slTrustFile).toBe('/tmp/custom-sl-trust.json');
     expect(config.slMaxUrlLength).toBe(512);
     expect(config.slMaxBodyChars).toBe(1000);
-    expect(config.slPatchEnabled).toBe(false);
+    expect(config.slWritesEnabled).toBe(false);
     expect(config.elicitationTimeoutMs).toBe(90000);
     expect(config.maxResultRows).toBe(50);
     expect(config.maxResultChars).toBe(2000);
   });
 
-  it('parses the PATCH kill switch case-insensitively', () => {
-    process.env.MCP_SL_PATCH_ENABLED = 'FALSE';
-    expect(loadConfig().slPatchEnabled).toBe(false);
+  it('parses the write kill switch case-insensitively', () => {
+    process.env.MCP_SL_WRITES_ENABLED = 'FALSE';
+    expect(loadConfig().slWritesEnabled).toBe(false);
   });
 
   it.each(['0', 'disabled', 'tru', '1'])(
-    'fails closed for invalid MCP_SL_PATCH_ENABLED="%s"',
+    'fails closed for invalid MCP_SL_WRITES_ENABLED="%s"',
     (value) => {
-      process.env.MCP_SL_PATCH_ENABLED = value;
-      expect(loadConfig().slPatchEnabled).toBe(false);
+      process.env.MCP_SL_WRITES_ENABLED = value;
+      expect(loadConfig().slWritesEnabled).toBe(false);
     },
   );
+
+  it.each(['false', 'FALSE', '0', 'disabled'])(
+    'keeps writes off when only the renamed MCP_SL_PATCH_ENABLED="%s" is set',
+    (value) => {
+      // An upgrade must never re-open writes an operator had switched off.
+      process.env.MCP_SL_PATCH_ENABLED = value;
+      expect(loadConfig().slWritesEnabled).toBe(false);
+      process.env.MCP_SL_WRITES_ENABLED = 'true';
+      expect(loadConfig().slWritesEnabled).toBe(false);
+    },
+  );
+
+  it('ignores a legacy MCP_SL_PATCH_ENABLED=true', () => {
+    process.env.MCP_SL_PATCH_ENABLED = 'true';
+    expect(loadConfig().slWritesEnabled).toBe(true);
+    process.env.MCP_SL_WRITES_ENABLED = 'false';
+    expect(loadConfig().slWritesEnabled).toBe(false);
+  });
 
   it.each(['abc', 'NaN', '0', '-1', ''])(
     'falls back to the 60s default for MCP_QUERY_TIMEOUT_MS="%s"',

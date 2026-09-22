@@ -228,6 +228,9 @@ function slConnectionKey(p: ConnectionProfile): string {
   return connectionKey([
     p.id, p.dbName, p.slUrl, p.slUser, p.slPassword,
     p.slTlsMode, p.slTlsServerName, p.slCertificateSha256,
+    // The verb allowlist lives on the session, so editing it must re-apply
+    // it: a narrowed list would otherwise keep the old verbs until restart.
+    [...p.slAllowedMethods].sort(),
   ]);
 }
 
@@ -562,6 +565,7 @@ Use "list" as the query to reload and list all available profiles.`,
             certificateSha256: tls.certificateSha256,
             connectionKey: slTargetKey,
             dbType: profile.dbType,
+            allowedMethods: profile.slAllowedMethods,
           });
           const check = await slAdapter.checkConnection();
           slConnected = check.connected;
@@ -601,6 +605,7 @@ Use "list" as the query to reload and list all available profiles.`,
         if (slConnected) {
           lines.push(`ServiceLayer: Connected via ${profile.slUrl}${slPingMs != null ? ` - ${slPingMs}ms` : ''}`);
           lines.push(`ServiceLayer TLS: ${slAdapter.getTlsStatus()}`);
+          lines.push(`ServiceLayer methods: ${slAdapter.getAllowedMethods().join(', ')}`);
           if (slTrustAction === 'approved-pin') lines.push(`ServiceLayer TLS trust: Certificate approved and saved to ${trustStore.getFilePath()}`);
           if (slTrustAction === 'replaced-pin') lines.push(`ServiceLayer TLS trust: Changed certificate approved and replaced in ${trustStore.getFilePath()}`);
           if (slTrustAction === 'migrated-pin') lines.push(`ServiceLayer TLS trust: Existing profile pin migrated to ${trustStore.getFilePath()}`);

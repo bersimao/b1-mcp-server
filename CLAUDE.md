@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `b1-mcp-server` is a Model Context Protocol server that gives an AI client guarded access to SAP Business One via both `DirectDb` (HANA / MS SQL) and the Service Layer OData API. Both sides are local: `src/db/directDb.ts` on `@sap/hana-client` + `mssql`, and a verified-TLS `fetch` adapter for the Service Layer.
 
-**Read-only SQL posture:** DirectDb executes only `SELECT` (and anonymous blocks whose statements are all reads); every `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` is blocked. Service Layer allows `GET` and guarded `PATCH`. PATCH requires a directly keyed entity and explicit user acceptance through MCP form elicitation; clients without elicitation support fail closed. SQL writes remain the human's job.
+**Read-only SQL posture:** DirectDb executes only `SELECT` (and anonymous blocks whose statements are all reads); every `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` is blocked. Service Layer allows the verbs in each profile's `slAllowedMethods` (default `GET` + `PATCH`; `POST` / `DELETE` opt-in; never `PUT`). Every write requires explicit user acceptance through MCP form elicitation; clients without elicitation support fail closed. SQL writes remain the human's job.
 
 The server starts **without** any database or Service Layer connection. The AI must call `connect_database` to load a profile from `~/.claude/connections.json` and connect whichever side(s) that profile configures. There is no env-var fallback — credentials live exclusively in that file.
 
@@ -112,7 +112,7 @@ Every tool is registered in [src/server.ts](src/server.ts) and shares the same a
 |---|---|---|
 | `connect_database` | [tools/connectDatabase.ts](src/tools/connectDatabase.ts) | Connect the DB and/or SL sides configured by a profile; `"list"` to enumerate profiles |
 | `execute_sql` | [tools/executeSql.ts](src/tools/executeSql.ts) | Runs SQL (user- or AI-written) — **read-only**: only SELECT and read-only anonymous blocks pass `validateAnySql()` |
-| `execute_service_layer` | [tools/executeServiceLayer.ts](src/tools/executeServiceLayer.ts) | OData GET plus keyed, user-approved PATCH; POST/PUT/DELETE blocked |
+| `execute_service_layer` | [tools/executeServiceLayer.ts](src/tools/executeServiceLayer.ts) | OData verbs from the profile's `slAllowedMethods`; every write user-approved; PUT never |
 | `get_schema_info` | [tools/schemaIntrospection.ts](src/tools/schemaIntrospection.ts) | Read-only metadata, HANA + MSSQL catalog syntax. Fixed catalog SELECTs; the `filter` is bound as `?`, never interpolated — this is the only SQL path that skips the guardrail engine, so the bind is the whole defence |
 | `check_connection` | [tools/checkConnection.ts](src/tools/checkConnection.ts) | Independent health pings for DB and SL |
 

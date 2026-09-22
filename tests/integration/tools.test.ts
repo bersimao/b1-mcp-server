@@ -47,7 +47,7 @@ function createTestConfig(overrides: Partial<Config> = {}): Config {
     slTrustFile: '',
     slMaxUrlLength: 2048,
     slMaxBodyChars: 50000,
-    slPatchEnabled: true,
+    slWritesEnabled: true,
     elicitationTimeoutMs: 120000,
     maxResultRows: 500,
     maxResultChars: 100000,
