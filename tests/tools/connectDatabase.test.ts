@@ -45,6 +45,7 @@ function slConnectionKey(profile: Record<string, unknown>): string {
     profile.id, profile.dbName, profile.slUrl, profile.slUser, profile.slPassword,
     profile.slTlsMode, profile.slTlsServerName, profile.slCertificateSha256,
     [...((profile.slAllowedMethods as string[] | undefined) ?? ['GET', 'PATCH'])].sort(),
+    profile.slWriteApproval ?? 'elicitation',
   ])).digest('hex');
 }
 
@@ -84,13 +85,17 @@ function setup() {
     maxResultChars: 100000, dryRun: false,
   };
   let handler!: (args: { query: string }, extra: any) => Promise<any>;
-  const server = { tool: (_name: string, _description: string, _schema: unknown, cb: typeof handler) => { handler = cb; } } as unknown as McpServer;
+  const client: { name?: string } = { name: 'claude-code' };
+  const server = {
+    tool: (_name: string, _description: string, _schema: unknown, cb: typeof handler) => { handler = cb; },
+    server: { getClientVersion: () => (client.name ? { name: client.name, version: '1' } : undefined) },
+  } as unknown as McpServer;
   registerConnectDatabaseTool(
     server, db, sl, new AuditLogger(config), config, manager,
     new RateLimiter({ maxCalls: 100, windowMs: 60000 }), new OperationCoordinator(),
     new ServiceLayerTrustStore(trustFile),
   );
-  return { connectionsFile, trustFile, handler, db, sl, slInit, slCheck, directDb };
+  return { connectionsFile, trustFile, handler, db, sl, slInit, slCheck, directDb, client };
 }
 
 describe('connect_database profile reload and TLS enrollment', () => {
@@ -275,6 +280,40 @@ describe('connect_database profile reload and TLS enrollment', () => {
     await ctx.handler({ query: 'client_hmg' }, { sendRequest: vi.fn() });
 
     expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({ allowedMethods: ['GET'] }));
+  });
+
+  it('re-logs the Service Layer when only slWriteApproval changes, and reports the mode per client', async () => {
+    const ctx = setup();
+    const profile = {
+      id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
+      slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+    };
+    Object.assign(ctx.sl, {
+      dbName: 'SBO_CLIENT', slUrl: profile.slUrl, cookie: 'B1SESSION=live',
+      initialised: true, connectionKey: slConnectionKey(profile),
+    });
+    ctx.slInit.mockImplementation(async (cfg: any) => {
+      Object.assign(ctx.sl, { initialised: true, writeApproval: cfg.writeApproval, connectionKey: cfg.connectionKey });
+    });
+    inspectCertificate.mockResolvedValue({
+      origin: 'https://sap.example.com:50000', certificateSha256: 'AA:BB',
+      subject: '{}', issuer: '{}', validFrom: 'now', validTo: 'later',
+      strictTlsValid: true,
+    });
+    writeProfiles(ctx.connectionsFile, [{ ...profile, slWriteApproval: 'client' }]);
+
+    const result = await ctx.handler({ query: 'client_hmg' }, { sendRequest: vi.fn() });
+
+    expect(ctx.slInit).toHaveBeenCalledWith(expect.objectContaining({ writeApproval: 'client' }));
+    expect(result.content[0].text).toContain("ServiceLayer write approval: client (the MCP client's permission prompt");
+
+    // Same session, another client: the mode shown is the one that will apply.
+    ctx.client.name = 'codex-mcp-client';
+    Object.assign(ctx.sl, { initialised: false });
+    const other = await ctx.handler({ query: 'client_hmg' }, { sendRequest: vi.fn() });
+    expect(other.content[0].text).toContain(
+      'ServiceLayer write approval: elicitation (slWriteApproval=client applies only to claude-code; this client reports "codex-mcp-client")',
+    );
   });
 
   it('ends the Service Layer session once the profile stops configuring it', async () => {

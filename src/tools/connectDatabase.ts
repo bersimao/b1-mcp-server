@@ -22,6 +22,7 @@ import { OperationType } from '../types/index.js';
 import { RateLimiter } from '../rateLimit/rateLimiter.js';
 import { OperationCoordinator } from '../security/operationCoordinator.js';
 import { ServiceLayerTrustStore } from '../security/serviceLayerTrustStore.js';
+import { effectiveWriteApproval, PERMISSION_PROMPT_CLIENT } from '../security/serviceLayerPolicy.js';
 import { createHash } from 'node:crypto';
 
 interface ResolvedTlsConfig {
@@ -231,6 +232,7 @@ function slConnectionKey(p: ConnectionProfile): string {
     // The verb allowlist lives on the session, so editing it must re-apply
     // it: a narrowed list would otherwise keep the old verbs until restart.
     [...p.slAllowedMethods].sort(),
+    p.slWriteApproval,
   ]);
 }
 
@@ -566,6 +568,7 @@ Use "list" as the query to reload and list all available profiles.`,
             connectionKey: slTargetKey,
             dbType: profile.dbType,
             allowedMethods: profile.slAllowedMethods,
+            writeApproval: profile.slWriteApproval,
           });
           const check = await slAdapter.checkConnection();
           slConnected = check.connected;
@@ -606,6 +609,14 @@ Use "list" as the query to reload and list all available profiles.`,
           lines.push(`ServiceLayer: Connected via ${profile.slUrl}${slPingMs != null ? ` - ${slPingMs}ms` : ''}`);
           lines.push(`ServiceLayer TLS: ${slAdapter.getTlsStatus()}`);
           lines.push(`ServiceLayer methods: ${slAdapter.getAllowedMethods().join(', ')}`);
+          const clientName = server.server.getClientVersion()?.name;
+          let approval = 'elicitation (MCP approval form)';
+          if (effectiveWriteApproval(slAdapter.getWriteApproval(), clientName) === 'client') {
+            approval = 'client (the MCP client\'s permission prompt; no approval form)';
+          } else if (slAdapter.getWriteApproval() === 'client') {
+            approval = `elicitation (slWriteApproval=client applies only to ${PERMISSION_PROMPT_CLIENT}; this client reports ${JSON.stringify(clientName ?? 'no name')})`;
+          }
+          lines.push(`ServiceLayer write approval: ${approval}`);
           if (slTrustAction === 'approved-pin') lines.push(`ServiceLayer TLS trust: Certificate approved and saved to ${trustStore.getFilePath()}`);
           if (slTrustAction === 'replaced-pin') lines.push(`ServiceLayer TLS trust: Changed certificate approved and replaced in ${trustStore.getFilePath()}`);
           if (slTrustAction === 'migrated-pin') lines.push(`ServiceLayer TLS trust: Existing profile pin migrated to ${trustStore.getFilePath()}`);

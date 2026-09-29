@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { DbAdapter, DirectDbModule } from '../../src/db/adapter.js';
 import { ServiceLayerAdapter } from '../../src/sl/serviceLayerAdapter.js';
@@ -16,10 +17,17 @@ const config: Config = {
   maxResultRows: 500, maxResultChars: 100000, dryRun: false,
 };
 
-function capture(overrides: Partial<Config> = {}) {
-  let handler!: (args: any, extra: any) => Promise<any>;
+type Handler = (args: any, extra: any) => Promise<any>;
+
+function capture(overrides: Partial<Config> = {}, clientName: string | null = 'claude-code') {
+  const handlers: Record<string, Handler> = {};
+  const schemas: Record<string, Record<string, z.ZodTypeAny>> = {};
   const fakeServer = {
-    tool: (_name: string, _description: string, _schema: unknown, cb: typeof handler) => { handler = cb; },
+    tool: (name: string, _description: string, schema: Record<string, z.ZodTypeAny>, cb: Handler) => {
+      handlers[name] = cb;
+      schemas[name] = schema;
+    },
+    server: { getClientVersion: () => (clientName ? { name: clientName, version: '1' } : undefined) },
   } as unknown as McpServer;
   const directDb: DirectDbModule = { init: vi.fn(), executeQuery: vi.fn(), close: vi.fn() };
   const db = new DbAdapter(directDb);
@@ -32,7 +40,10 @@ function capture(overrides: Partial<Config> = {}) {
     fakeServer, sl, db, new AuditLogger(effective), effective,
     new RateLimiter({ maxCalls: 100, windowMs: 60000 }), new OperationCoordinator(),
   );
-  return { handler, sl, execute };
+  const read: Handler = (args, extra) => handlers.execute_service_layer(args, extra);
+  // Writes default to the connected database; a test overrides it to probe the check.
+  const write: Handler = (args, extra) => handlers.execute_service_layer_write({ database: 'SBO_TEST', ...args }, extra);
+  return { read, write, schemas, sl, execute };
 }
 
 const accept = { sendRequest: vi.fn().mockResolvedValue({ action: 'accept', content: { approve: true } }) };
@@ -41,8 +52,8 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe('execute_service_layer PATCH approval', () => {
   it('executes only after the user accepts the exact elicitation', async () => {
-    const { handler, execute } = capture();
-    const result = await handler({ method: 'PATCH', url: "BusinessPartners('C1')", body: { CreditLimit: 10 } }, accept);
+    const { write, execute } = capture();
+    const result = await write({ method: 'PATCH', url: "BusinessPartners('C1')", body: { CreditLimit: 10 } }, accept);
     expect(result.isError).toBeUndefined();
     expect(accept.sendRequest).toHaveBeenCalledOnce();
     const approvalRequest = accept.sendRequest.mock.calls[0][0];
@@ -55,7 +66,7 @@ describe('execute_service_layer PATCH approval', () => {
 
   it('fails closed when approval is declined or unsupported', async () => {
     const declined = capture();
-    const declineResult = await declined.handler(
+    const declineResult = await declined.write(
       { method: 'PATCH', url: 'Items(1)', body: { Valid: 'tNO' } },
       { sendRequest: vi.fn().mockResolvedValue({ action: 'decline' }) },
     );
@@ -63,7 +74,7 @@ describe('execute_service_layer PATCH approval', () => {
     expect(declined.execute).not.toHaveBeenCalled();
 
     const unsupported = capture();
-    const unsupportedResult = await unsupported.handler(
+    const unsupportedResult = await unsupported.write(
       { method: 'PATCH', url: 'Items(1)', body: { Valid: 'tNO' } },
       { sendRequest: vi.fn().mockRejectedValue(new Error('Client does not support form elicitation.')) },
     );
@@ -74,7 +85,7 @@ describe('execute_service_layer PATCH approval', () => {
   it('never executes PATCH in dry-run or with the kill switch off', async () => {
     for (const overrides of [{ dryRun: true }, { slWritesEnabled: false }]) {
       const ctx = capture(overrides);
-      const result = await ctx.handler({ method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }, accept);
+      const result = await ctx.write({ method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }, accept);
       expect(ctx.execute).not.toHaveBeenCalled();
       expect(result.content[0].text).toMatch(/DRY RUN|disabled/);
     }
@@ -82,7 +93,7 @@ describe('execute_service_layer PATCH approval', () => {
 
   it('cancels an approved PATCH if the active profile changes while awaiting approval', async () => {
     const ctx = capture();
-    const result = await ctx.handler(
+    const result = await ctx.write(
       { method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } },
       { sendRequest: vi.fn().mockImplementation(async () => {
         Object.assign(ctx.sl, { dbName: 'SBO_OTHER' });
@@ -96,7 +107,7 @@ describe('execute_service_layer PATCH approval', () => {
   it('cancels an approved PATCH after a same-database Service Layer switch', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
     const ctx = capture();
-    const result = await ctx.handler(
+    const result = await ctx.write(
       { method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } },
       { sendRequest: vi.fn().mockImplementation(async () => {
         await ctx.sl.disconnect();
@@ -116,7 +127,7 @@ describe('execute_service_layer method allowlist', () => {
   it('denies a verb the profile does not allow, before approval or execution', async () => {
     const ctx = capture();
     const sendRequest = vi.fn();
-    const result = await ctx.handler({ method: 'POST', url: 'Orders', body: { CardCode: 'C1' } }, { sendRequest });
+    const result = await ctx.write({ method: 'POST', url: 'Orders', body: { CardCode: 'C1' } }, { sendRequest });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("not in this profile's slAllowedMethods (GET, PATCH)");
@@ -127,7 +138,7 @@ describe('execute_service_layer method allowlist', () => {
   it('denies even GET on a profile that does not list it', async () => {
     const ctx = capture();
     Object.assign(ctx.sl, { allowedMethods: ['PATCH'] });
-    const result = await ctx.handler({ method: 'GET', url: 'Items' }, {});
+    const result = await ctx.read({ method: 'GET', url: 'Items' }, {});
     expect(result.isError).toBe(true);
     expect(ctx.execute).not.toHaveBeenCalled();
   });
@@ -137,8 +148,8 @@ describe('execute_service_layer method allowlist', () => {
     Object.assign(ctx.sl, { allowedMethods: ['GET', 'POST', 'DELETE'] });
     const approve = { sendRequest: vi.fn().mockResolvedValue({ action: 'accept', content: { approve: true } }) };
 
-    await ctx.handler({ method: 'POST', url: 'Orders(7)/Close' }, approve);
-    await ctx.handler({ method: 'DELETE', url: "Items('A1')" }, approve);
+    await ctx.write({ method: 'POST', url: 'Orders(7)/Close' }, approve);
+    await ctx.write({ method: 'DELETE', url: "Items('A1')" }, approve);
 
     expect(approve.sendRequest).toHaveBeenCalledTimes(2);
     expect(approve.sendRequest.mock.calls[0][0].params.message).toContain('Approve SAP Business One POST?');
@@ -153,7 +164,7 @@ describe('execute_service_layer method allowlist', () => {
       for (const args of [{ method: 'POST', url: 'Orders', body: { CardCode: 'C1' } }, { method: 'DELETE', url: 'Items(1)' }]) {
         const ctx = capture(overrides);
         Object.assign(ctx.sl, { allowedMethods: ['GET', 'POST', 'DELETE'] });
-        const result = await ctx.handler(args, extra);
+        const result = await ctx.write(args, extra);
         expect(ctx.execute).not.toHaveBeenCalled();
         expect(result.content[0].text).toMatch(/not approved|DRY RUN|disabled/);
       }
@@ -166,13 +177,13 @@ describe('execute_service_layer GET result caps', () => {
     // The adapter bounds the RAW response, but pretty-printing inflates it well
     // past that cap. Without the shared renderer, a single GET could push a
     // multiple of maxResultChars into the model's context.
-    const { handler, execute } = capture({ maxResultChars: 2_000 });
+    const { read, execute } = capture({ maxResultChars: 2_000 });
     execute.mockResolvedValue({
       data: { value: Array.from({ length: 400 }, (_, i) => ({ ItemCode: `A${i}`, Note: 'x'.repeat(80) })) },
       durationMs: 5,
     });
 
-    const result = await handler({ method: 'GET', url: 'Items' }, {});
+    const result = await read({ method: 'GET', url: 'Items' }, {});
     const text: string = result.content[0].text;
 
     expect(result.isError).toBeUndefined();
@@ -181,10 +192,10 @@ describe('execute_service_layer GET result caps', () => {
   });
 
   it('leaves a small GET payload intact', async () => {
-    const { handler, execute } = capture();
+    const { read, execute } = capture();
     execute.mockResolvedValue({ data: { value: [{ ItemCode: 'A1' }] }, durationMs: 2 });
 
-    const result = await handler({ method: 'GET', url: "Items('A1')" }, {});
+    const result = await read({ method: 'GET', url: "Items('A1')" }, {});
     const text: string = result.content[0].text;
 
     expect(text).not.toContain('TRUNCATED');
@@ -198,13 +209,85 @@ describe('execute_service_layer audit engine', () => {
     // engine from there mislabelled every SL-only MS SQL audit record.
     // capture() puts DbAdapter at 'hana', so the SL side must win.
     const log = vi.spyOn(AuditLogger.prototype, 'log').mockImplementation(() => {});
-    const { handler, sl } = capture();
+    const { read, sl } = capture();
     Object.assign(sl, { dbType: 'mssql' });
 
-    await handler({ method: 'GET', url: 'Items?$top=1' }, {});
+    await read({ method: 'GET', url: 'Items?$top=1' }, {});
 
     expect(log).toHaveBeenCalled();
     for (const [entry] of log.mock.calls) expect(entry.dbType).toBe('mssql');
     log.mockRestore();
+  });
+});
+
+describe('execute_service_layer_write approval mode', () => {
+  it('runs a client-mode write after the client permission prompt, without elicitation, audited as its own rule', async () => {
+    const log = vi.spyOn(AuditLogger.prototype, 'log').mockImplementation(() => {});
+    const ctx = capture();
+    Object.assign(ctx.sl, { allowedMethods: ['GET', 'POST'], writeApproval: 'client' });
+    const sendRequest = vi.fn();
+
+    const result = await ctx.write({ method: 'POST', url: 'InventoryCountings', body: { Remarks: 'x' } }, { sendRequest });
+
+    expect(result.isError).toBeUndefined();
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(ctx.execute).toHaveBeenCalledWith({ method: 'POST', url: 'InventoryCountings', data: { Remarks: 'x' } });
+    expect(log.mock.calls.map(([entry]) => [entry.decision, entry.rule])).toContainEqual(['ALLOW', 'slWriteClientApproval']);
+    log.mockRestore();
+  });
+
+  it.each(['codex-mcp-client', null])('falls back to elicitation when the MCP client is %s, not Claude Code', async (clientName) => {
+    // The profile flag is shared by every client that loads this server; only
+    // Claude Code's permission prompt is known to gate the write tool.
+    const ctx = capture({}, clientName);
+    Object.assign(ctx.sl, { writeApproval: 'client' });
+    const sendRequest = vi.fn().mockResolvedValue({ action: 'decline' });
+
+    const result = await ctx.write({ method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }, { sendRequest });
+
+    expect(sendRequest).toHaveBeenCalledOnce();
+    expect(result.isError).toBe(true);
+    expect(ctx.execute).not.toHaveBeenCalled();
+  });
+
+  it('keeps the verb allowlist, input policy, dry-run and kill switch in client mode', async () => {
+    const cases: [Partial<Config>, Record<string, unknown>][] = [
+      [{}, { method: 'POST', url: 'Orders', body: { CardCode: 'C1' } }],
+      [{}, { method: 'PATCH', url: 'Items', body: { U_X: 1 } }],
+      [{ dryRun: true }, { method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }],
+      [{ slWritesEnabled: false }, { method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }],
+    ];
+    for (const [overrides, args] of cases) {
+      const ctx = capture(overrides);
+      Object.assign(ctx.sl, { writeApproval: 'client' });
+      await ctx.write(args, { sendRequest: vi.fn() });
+      expect(ctx.execute).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each(['elicitation', 'client'])('denies a %s-mode write whose database is not the connected one, before approval', async (writeApproval) => {
+    const ctx = capture();
+    Object.assign(ctx.sl, { writeApproval });
+    const sendRequest = vi.fn().mockResolvedValue({ action: 'accept', content: { approve: true } });
+
+    const result = await ctx.write({ database: 'SBO_PROD', method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }, { sendRequest });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('does not match the connected Service Layer database "SBO_TEST"');
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(ctx.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('execute_service_layer tool split', () => {
+  it('rejects a stale write on the read tool at the schema instead of running a GET', () => {
+    const { schemas } = capture();
+    const read = z.object(schemas.execute_service_layer);
+    const write = z.object(schemas.execute_service_layer_write);
+
+    expect(read.safeParse({ method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }).success).toBe(false);
+    expect(read.parse({ url: 'Items' }).method).toBe('GET');
+    expect(write.safeParse({ database: 'SBO_TEST', method: 'GET', url: 'Items' }).success).toBe(false);
+    expect(write.safeParse({ method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }).success).toBe(false);
   });
 });

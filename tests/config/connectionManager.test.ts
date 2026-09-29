@@ -83,6 +83,20 @@ describe('ConnectionManager.find', () => {
     expect(manager.find('good')).toBeDefined();
   });
 
+  it('defaults slWriteApproval to elicitation, normalises it, and skips a profile with an unknown mode', () => {
+    const manager = createManagerWithProfiles([
+      { id: 'legacy', dbType: 'hana', dbName: 'SBO_A' },
+      { id: 'remote', dbType: 'hana', dbName: 'SBO_B', slWriteApproval: ' Client ' },
+      { id: 'bad', dbType: 'hana', dbName: 'SBO_C', slWriteApproval: 'none' },
+      { id: 'bad_type', dbType: 'hana', dbName: 'SBO_D', slWriteApproval: true },
+    ]);
+
+    expect(manager.find('legacy')?.slWriteApproval).toBe('elicitation');
+    expect(manager.find('remote')?.slWriteApproval).toBe('client');
+    expect(manager.find('bad')).toBeUndefined();
+    expect(manager.find('bad_type')).toBeUndefined();
+  });
+
   it('never echoes a rejected dbType, slTlsMode or slAllowedMethods value to stderr', () => {
     const errors: string[] = [];
     const spy = vi.spyOn(console, 'error').mockImplementation((...args) => { errors.push(args.join(' ')); });
@@ -91,6 +105,7 @@ describe('ConnectionManager.find', () => {
         { id: 'leaky', dbType: 'hana', dbName: 'SBO_X', slAllowedMethods: ['GET', 'hunter2-secret'] },
         { id: 'leaky_db', dbType: 'hunter2-secret', dbName: 'SBO_Y' },
         { id: 'leaky_tls', dbType: 'hana', dbName: 'SBO_Z', slTlsMode: 'hunter2-secret' },
+        { id: 'leaky_approval', dbType: 'hana', dbName: 'SBO_W', slWriteApproval: 'hunter2-secret' },
       ]);
     } finally {
       spy.mockRestore();

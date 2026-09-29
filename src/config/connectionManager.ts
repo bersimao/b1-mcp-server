@@ -20,7 +20,8 @@
 //       "slTlsMode": "pinned",                     // legacy migration only
 //       "slTlsServerName": "sap.example.com",      // optional pinned-TLS SNI name
 //       "slCertificateSha256": "AA:BB:...",         // legacy migration only
-//       "slAllowedMethods": ["GET", "PATCH"]       // optional; default GET+PATCH
+//       "slAllowedMethods": ["GET", "PATCH"],      // optional; default GET+PATCH
+//       "slWriteApproval": "elicitation"           // optional; or "client"
 //     }
 //   ]
 //
@@ -33,7 +34,9 @@ import { DbType } from '../types/index.js';
 import {
   DEFAULT_SL_ALLOWED_METHODS,
   SERVICE_LAYER_METHODS,
+  SL_WRITE_APPROVAL_MODES,
   type ServiceLayerMethod,
+  type SlWriteApproval,
 } from '../security/serviceLayerPolicy.js';
 
 function parseSlAllowedMethods(value: unknown): ServiceLayerMethod[] {
@@ -52,6 +55,13 @@ function parseSlAllowedMethods(value: unknown): ServiceLayerMethod[] {
     methods.add(method as ServiceLayerMethod);
   }
   return [...methods];
+}
+
+function parseSlWriteApproval(value: unknown): SlWriteApproval {
+  if (value === undefined || value === null) return 'elicitation';
+  const mode = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if ((SL_WRITE_APPROVAL_MODES as readonly string[]).includes(mode)) return mode as SlWriteApproval;
+  throw new Error('Invalid slWriteApproval. Expected "elicitation" or "client".');
 }
 
 function parseSlTlsMode(value: unknown): 'strict' | 'pinned' | undefined {
@@ -119,6 +129,9 @@ export interface ConnectionProfile {
   /** HTTP verbs execute_service_layer may send for this profile. Every non-GET
    *  verb still requires human approval per call. */
   slAllowedMethods: ServiceLayerMethod[];
+  /** Who approves a write: MCP form elicitation (default) or, for Claude Code
+   *  only, the client's own permission prompt. */
+  slWriteApproval: SlWriteApproval;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,6 +197,7 @@ export class ConnectionManager {
             slTlsServerName: optionalTrimmedString(raw.slTlsServerName, 'slTlsServerName'),
             slCertificateSha256: optionalTrimmedString(raw.slCertificateSha256, 'slCertificateSha256'),
             slAllowedMethods: parseSlAllowedMethods(raw.slAllowedMethods),
+            slWriteApproval: parseSlWriteApproval(raw.slWriteApproval),
           });
         } catch (err: any) {
           const label = typeof p === 'object' && p !== null && 'id' in p

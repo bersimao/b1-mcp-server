@@ -6,7 +6,8 @@ both the database (HANA / MS SQL) and the Service Layer OData API.
 
 ## Features
 
-- **5 MCP tools**: `connect_database`, `execute_sql`, `execute_service_layer`,
+- **6 MCP tools**: `connect_database`, `execute_sql`, `execute_service_layer`
+  (GET), `execute_service_layer_write` (PATCH / POST / DELETE),
   `get_schema_info`, `check_connection`.
 - **Multi-environment**: switch between client databases at runtime via named
   connection profiles. No restart needed.
@@ -102,7 +103,7 @@ avoiding an unnecessary failure that may count toward account lockout under the
 configured login policy. Non-empty password strings are passed through without
 trimming. Either side, or both sides, can be configured in one profile.
 
-`slAllowedMethods` (optional) lists the HTTP verbs `execute_service_layer` may
+`slAllowedMethods` (optional) lists the HTTP verbs the Service Layer tools may
 send for that profile: any of `GET`, `PATCH`, `POST`, `DELETE`
 (case-insensitive). Without it a profile keeps the historic `["GET", "PATCH"]`;
 `["GET"]` makes a profile read-only. `PUT` is not supported, because it
@@ -112,6 +113,19 @@ guessing. The list is applied on connect and printed by `connect_database`;
 editing it re-logs the Service Layer on the next `connect_database` call.
 Allowing a write verb does not waive approval: every write still needs the
 per-call human acceptance described under the security posture.
+
+`slWriteApproval` (optional) chooses who approves a write. `"elicitation"`
+(default): the server asks through an MCP approval form. `"client"`: the server
+sends no form and relies on the MCP client's own permission prompt — for
+setups where the form cannot reach the user, such as Claude Code Remote
+Control, which forwards permission prompts but not MCP forms. `client` is
+honoured only when the MCP client identifies itself as Claude Code; any other
+client falls back to elicitation. The server cannot see that prompt, so the
+mode is only as strong as the client's permission settings: list
+`mcp__<server-name>__execute_service_layer_write` under `permissions.ask`,
+never `allow`, and do not use it with `--dangerously-skip-permissions`. Keep
+production profiles on `elicitation`. `connect_database` prints the mode that
+applies to the current client; editing it re-logs the Service Layer.
 
 Both SAP Service Layer roots are supported: `/b1s/v1` for OData v3 and
 `/b1s/v2` for OData v4. Login, health checks and relative Service Layer requests
@@ -294,10 +308,15 @@ Service Layer requests allow only the verbs in the profile's `slAllowedMethods`
 (default `GET` and `PATCH`); `PUT` is never available. PATCH and DELETE require
 one directly keyed entity endpoint; POST accepts an entity set, a service
 operation or one action on a keyed entity (`Orders(12)/Close`); writes take no
-query options. Every write requires explicit user acceptance through MCP form
+query options. Writes go through a separate tool, `execute_service_layer_write`,
+so a client can gate them by tool name while GETs stay unprompted. Every write
+names its target `database`, which must match the connected Service Layer.
+By default every write requires explicit user acceptance through MCP form
 elicitation. The approval screen is bound to the database, Service Layer root,
 endpoint, exact body, field list and SHA-256 body hash. A client without
-elicitation support cannot write. `MCP_DRY_RUN=true` never executes a write,
+elicitation support cannot write. A profile with `slWriteApproval: "client"`
+replaces the form with Claude Code's permission prompt (see the profile
+fields above). `MCP_DRY_RUN=true` never executes a write,
 and `MCP_SL_WRITES_ENABLED=false` disables every write globally.
 
 The per-table classification model (SAP_CORE / SAP_USER / CUSTOM / TEMP with

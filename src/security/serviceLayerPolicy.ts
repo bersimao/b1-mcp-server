@@ -7,13 +7,28 @@ import { createHash } from 'crypto';
 const VALIDATION_ROOT_PATH = '/configured-service-layer-root/';
 const VALIDATION_ROOT_URL = `https://mcp.invalid${VALIDATION_ROOT_PATH}`;
 
-/** Every verb execute_service_layer can speak. PUT is absent on purpose: it
+/** Every verb the Service Layer tools can speak. PUT is absent on purpose: it
  *  replaces the whole entity, so any field the body omits is wiped. */
 export const SERVICE_LAYER_METHODS = ['GET', 'PATCH', 'POST', 'DELETE'] as const;
 export type ServiceLayerMethod = typeof SERVICE_LAYER_METHODS[number];
 
 /** Allowed verbs for a profile without slAllowedMethods — the pre-allowlist behaviour. */
 export const DEFAULT_SL_ALLOWED_METHODS: readonly ServiceLayerMethod[] = ['GET', 'PATCH'];
+
+/** Who approves a Service Layer write. `elicitation` (default): the server asks
+ *  through an MCP form. `client`: the server trusts the MCP client's own
+ *  permission prompt, which Remote Control forwards and elicitation does not. */
+export const SL_WRITE_APPROVAL_MODES = ['elicitation', 'client'] as const;
+export type SlWriteApproval = typeof SL_WRITE_APPROVAL_MODES[number];
+
+/** The only client whose permission prompt may replace elicitation. clientInfo
+ *  is self-reported, so this stops another client (Codex, Inspector) from
+ *  inheriting a profile's client mode by accident, not a client that lies. */
+export const PERMISSION_PROMPT_CLIENT = 'claude-code';
+
+export function effectiveWriteApproval(mode: SlWriteApproval, clientName: string | undefined): SlWriteApproval {
+  return mode === 'client' && clientName === PERMISSION_PROMPT_CLIENT ? 'client' : 'elicitation';
+}
 
 export interface ValidatedServiceLayerRequest {
   url: string;
