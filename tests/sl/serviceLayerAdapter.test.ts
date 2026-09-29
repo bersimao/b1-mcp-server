@@ -216,6 +216,35 @@ describe('ServiceLayerAdapter secure transport', () => {
     expect(stderr.mock.calls.flat().join(' ')).not.toContain('top-secret-session');
   });
 
+  it.each([
+    ['v1', { error: { code: -5002, message: { lang: 'en-us', value: 'Quantity falls into negative inventory' } } }],
+    ['v2', { error: { code: '-5002', message: 'Quantity falls into negative inventory' } }],
+  ])('returns the Service Layer %s error message on a failed request', async (version, body) => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(loginResponse())
+      .mockResolvedValueOnce(new Response(JSON.stringify(body), { status: 400 }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const adapter = new ServiceLayerAdapter();
+    await adapter.init({ database: 'SBO_TEST', username: 'u', password: 'p', url: `https://sap.local/b1s/${version}` });
+
+    await expect(adapter.execute({ method: 'POST', url: 'InventoryGenExits', data: {} })).rejects.toThrow(
+      'Service Layer request failed: HTTP 400 (-5002): Quantity falls into negative inventory',
+    );
+  });
+
+  it('does not echo a non-JSON error body', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(loginResponse())
+      .mockResolvedValueOnce(new Response('<html>proxy error</html>', { status: 502 }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const adapter = new ServiceLayerAdapter();
+    await adapter.init({ database: 'SBO_TEST', username: 'u', password: 'p', url: 'https://sap.local/b1s/v1' });
+
+    await expect(adapter.execute({ method: 'GET', url: 'Items' })).rejects.toThrow(/^Service Layer request failed: HTTP 502$/);
+  });
+
   it('aborts rendering responses above the configured cap', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(loginResponse())

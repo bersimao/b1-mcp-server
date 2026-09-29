@@ -86,6 +86,17 @@ export function safeCertificateDetail(value: unknown): string {
   return text.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 1_000);
 }
 
+/** SL error body: v1 {error:{code,message:{lang,value}}}, v2 {error:{code,message}}.
+ *  Non-JSON bodies (proxy HTML pages) yield nothing. */
+function slErrorDetail(data: unknown): string {
+  const error = (data as { error?: { code?: unknown; message?: unknown } } | null)?.error;
+  const message = error?.message;
+  const text = typeof message === 'string' ? message : (message as { value?: unknown } | undefined)?.value;
+  if (typeof text !== 'string' || !text) return '';
+  const code = error?.code === undefined ? '' : ` (${safeCertificateDetail(error.code)})`;
+  return `${code}: ${safeCertificateDetail(text)}`;
+}
+
 export function canonicalServiceLayerOrigin(rawUrl: string): string {
   const url = new URL(rawUrl);
   if (url.protocol !== 'https:') throw new Error('Service Layer URL must use HTTPS.');
@@ -469,7 +480,7 @@ export class ServiceLayerAdapter {
       );
 
       if (response.status < 200 || response.status >= 300) {
-        throw new Error(`HTTP ${response.status}`);
+        throw new Error(`HTTP ${response.status}${slErrorDetail(response.data)}`);
       }
       return { data: response.data, durationMs: Date.now() - start };
     } catch (err) {
