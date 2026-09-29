@@ -309,6 +309,12 @@ describe('extractTables', () => {
     expect(tables).toContain('"@MY_UDT"');
   });
 
+  it('extracts {db}-qualified table names (HANA and MS SQL forms)', () => {
+    expect(extractTables('SELECT * FROM {db}.OITW W JOIN {db}."@MY_UDT" U ON 1=1'))
+      .toEqual(['{db}.OITW', '{db}."@MY_UDT"']);
+    expect(extractTables('SELECT * FROM {db}..ORDR')).toEqual(['{db}..ORDR']);
+  });
+
   it('extracts #temp table names', () => {
     const tables = extractTables('SELECT * FROM #temp_data');
     expect(tables).toContain('#temp_data');

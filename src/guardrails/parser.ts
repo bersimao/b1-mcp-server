@@ -554,6 +554,10 @@ export function extractTables(sql: string): string[] {
           pos++;
         }
         if (pos < str.length) { ident += str[pos]; pos++; } // closing backtick
+      } else if (str.startsWith('{db}', pos)) {
+        // Schema placeholder, replaced verbatim by DirectDb.executeQuery
+        ident += '{db}';
+        pos += 4;
       } else if (/[\w@#$.]/.test(ch)) {
         ident += ch;
         pos++;
