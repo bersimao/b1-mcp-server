@@ -18,6 +18,8 @@ import { OperationType } from '../types/index.js';
 import { RateLimiter } from '../rateLimit/rateLimiter.js';
 import { OperationCoordinator } from '../security/operationCoordinator.js';
 import { effectiveWriteApproval, type ServiceLayerMethod, validateServiceLayerRequest } from '../security/serviceLayerPolicy.js';
+import { ConnectionManager } from '../config/connectionManager.js';
+import { slConnectionKey } from './connectDatabase.js';
 import { formatResult } from './formatResult.js';
 
 export function registerServiceLayerTool(
@@ -28,6 +30,7 @@ export function registerServiceLayerTool(
   config: Config,
   rateLimiter: RateLimiter,
   coordinator: OperationCoordinator,
+  connectionManager: ConnectionManager,
 ): void {
   const dbName = () => slAdapter.getDbName() || dbAdapter.getDbName() || '(not connected)';
   // The SL side's own engine: an SL-only profile leaves DbAdapter at its
@@ -82,6 +85,28 @@ export function registerServiceLayerTool(
       }));
       return { content: [{ type: 'text' as const, text: `[DB: ${targetDb}] Request rejected: ${reason}` }], isError: true };
     }
+
+    // The session keeps the approval mode and verb allowlist from its last
+    // connect_database. Re-read the file so a user who removes "none" or
+    // narrows slAllowedMethods is obeyed now, not after a reconnect: any edit
+    // to the profile's Service Layer fields denies writes until it reconnects.
+    // Checked here to skip a pointless approval, and again right before
+    // execution, because an approval can wait minutes for the user.
+    const profileChangedDenial = () => {
+      if (!isWrite) return undefined;
+      connectionManager.reload();
+      const sessionKey = slAdapter.getConnectionKey();
+      if (connectionManager.listAll().some(p => slConnectionKey(p) === sessionKey)) return undefined;
+      const reason = 'the connected profile changed or is gone in the connections file since connect_database. Reconnect it to apply the current settings.';
+      logger.log(logger.createEntry({
+        tool, database: targetDb, dbType: dbType(),
+        operation, tables: [], query: `${method} ${url}`,
+        decision: 'DENY', reason, rule: 'slProfileChanged',
+      }));
+      return { content: [{ type: 'text' as const, text: `[DB: ${targetDb}] Request rejected: ${reason}` }], isError: true };
+    };
+    const earlyDenial = profileChangedDenial();
+    if (earlyDenial) return earlyDenial;
 
     // The opt-in lives in the connections file, which the AI cannot edit; the
     // tool name alone must never be enough to skip approval.
@@ -224,6 +249,8 @@ export function registerServiceLayerTool(
           isError: true,
         };
       }
+      const lateDenial = profileChangedDenial();
+      if (lateDenial) return lateDenial;
       if (dbAdapter.isConnected() && dbAdapter.getDbName() !== targetDb) {
         return {
           content: [{ type: 'text' as const, text: `[DB: ${targetDb}] Request denied because DirectDb and Service Layer target different databases.` }],
@@ -296,7 +323,7 @@ Denied when the connected profile's slAllowedMethods (printed by connect_databas
 
 The verb must be in the connected profile's slAllowedMethods, and database must equal the connected Service Layer database exactly — connect_database prints both. A mismatch is denied.
 
-Approval follows the profile's slWriteApproval, also printed by connect_database. "elicitation" (default): the server asks the user through an MCP approval form; clients without form elicitation cannot write. "client" or "none": the server executes after this client's own permission prompt, honoured only for Claude Code. On a "none" profile, execute_service_layer_write_unattended does the same write without any approval. MCP_DRY_RUN previews but never executes a write, and MCP_SL_WRITES_ENABLED=false disables every write globally.
+Approval follows the profile's slWriteApproval, also printed by connect_database. "elicitation" (default): the server asks the user through an MCP approval form; clients without form elicitation cannot write. "client" or "none": the server executes after this client's own permission prompt, honoured only for Claude Code. On a "none" profile, prefer execute_service_layer_write_unattended, which does the same write without any approval; use this tool there only when the user asks to confirm the write. MCP_DRY_RUN previews but never executes a write, and MCP_SL_WRITES_ENABLED=false disables every write globally.
 
 PATCH and DELETE accept one directly keyed entity endpoint only. POST accepts an entity set, a service operation, or one action on a keyed entity (Orders(12)/Close). Query options, navigation paths, absolute URLs, Login/Logout and $batch are denied.`,
     writeSchema,

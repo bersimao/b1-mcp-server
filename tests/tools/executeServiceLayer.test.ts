@@ -8,6 +8,8 @@ import { Config } from '../../src/config/settings.js';
 import { RateLimiter } from '../../src/rateLimit/rateLimiter.js';
 import { OperationCoordinator } from '../../src/security/operationCoordinator.js';
 import { registerServiceLayerTool } from '../../src/tools/executeServiceLayer.js';
+import { slConnectionKey } from '../../src/tools/connectDatabase.js';
+import type { ConnectionManager, ConnectionProfile } from '../../src/config/connectionManager.js';
 
 const config: Config = {
   connectionsFile: '', maxQueryLength: 8000, auditLogPath: '', logLevel: 'error',
@@ -32,19 +34,30 @@ function capture(overrides: Partial<Config> = {}, clientName: string | null = 'c
   const directDb: DirectDbModule = { init: vi.fn(), executeQuery: vi.fn(), close: vi.fn() };
   const db = new DbAdapter(directDb);
   Object.assign(db, { dbName: 'SBO_TEST', dbType: 'hana', initialised: true });
+  // The connections file as the write path re-reads it; the session key matches it.
+  const profile: ConnectionProfile = {
+    id: 'test', dbType: 'hana', dbServer: '', dbName: 'SBO_TEST', dbUser: '', dbPassword: '',
+    slUrl: 'https://sap/b1s/v1', slUser: 'manager', slPassword: 'x',
+    slAllowedMethods: ['GET', 'PATCH'], slWriteApproval: 'elicitation',
+  };
+  const profiles = [profile];
+  const connectionManager = { reload: vi.fn(), listAll: () => [...profiles] } as unknown as ConnectionManager;
   const sl = new ServiceLayerAdapter();
-  Object.assign(sl, { dbName: 'SBO_TEST', slUrl: 'https://sap/b1s/v1', cookie: 'B1SESSION=x', initialised: true });
+  Object.assign(sl, {
+    dbName: 'SBO_TEST', slUrl: 'https://sap/b1s/v1', cookie: 'B1SESSION=x', initialised: true,
+    connectionKey: slConnectionKey(profile),
+  });
   const execute = vi.spyOn(sl, 'execute').mockResolvedValue({ data: null, durationMs: 3 });
   const effective = { ...config, ...overrides };
   registerServiceLayerTool(
     fakeServer, sl, db, new AuditLogger(effective), effective,
-    new RateLimiter({ maxCalls: 100, windowMs: 60000 }), new OperationCoordinator(),
+    new RateLimiter({ maxCalls: 100, windowMs: 60000 }), new OperationCoordinator(), connectionManager,
   );
   const read: Handler = (args, extra) => handlers.execute_service_layer(args, extra);
   // Writes default to the connected database; a test overrides it to probe the check.
   const write: Handler = (args, extra) => handlers.execute_service_layer_write({ database: 'SBO_TEST', ...args }, extra);
   const unattended: Handler = (args, extra) => handlers.execute_service_layer_write_unattended({ database: 'SBO_TEST', ...args }, extra);
-  return { read, write, unattended, schemas, sl, execute };
+  return { read, write, unattended, schemas, sl, execute, profile, profiles, connectionManager };
 }
 
 const accept = { sendRequest: vi.fn().mockResolvedValue({ action: 'accept', content: { approve: true } }) };
@@ -356,5 +369,61 @@ describe('execute_service_layer tool split', () => {
     expect(read.parse({ url: 'Items' }).method).toBe('GET');
     expect(write.safeParse({ database: 'SBO_TEST', method: 'GET', url: 'Items' }).success).toBe(false);
     expect(write.safeParse({ method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }).success).toBe(false);
+  });
+});
+
+describe('write-time profile re-read', () => {
+  it('denies unattended writes as soon as "none" is removed from the file, without a reconnect', async () => {
+    const ctx = capture();
+    Object.assign(ctx.sl, { allowedMethods: ['GET', 'PATCH'], writeApproval: 'none' });
+    ctx.profile.slWriteApproval = 'none';
+    Object.assign(ctx.sl, { connectionKey: slConnectionKey(ctx.profile) });
+    const allowed = await ctx.unattended({ method: 'PATCH', url: 'Items(1)', body: { Valid: 'tNO' } }, {});
+    expect(allowed.isError).toBeUndefined();
+
+    ctx.profiles[0] = { ...ctx.profile, slWriteApproval: 'elicitation' };
+    const denied = await ctx.unattended({ method: 'PATCH', url: 'Items(1)', body: { Valid: 'tNO' } }, {});
+    expect(denied.isError).toBe(true);
+    expect(denied.content[0].text).toContain('Reconnect');
+    expect(ctx.execute).toHaveBeenCalledOnce();
+  });
+
+  it('denies a write whose verb was removed from slAllowedMethods in the file', async () => {
+    const ctx = capture();
+    ctx.profiles[0] = { ...ctx.profile, slAllowedMethods: ['GET'] };
+    const result = await ctx.write({ method: 'PATCH', url: 'Items(1)', body: { Valid: 'tNO' } }, accept);
+    expect(result.isError).toBe(true);
+    expect(ctx.execute).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the profile is gone or the file no longer loads', async () => {
+    const ctx = capture();
+    ctx.profiles.length = 0;
+    const sendRequest = vi.fn();
+    const result = await ctx.write({ method: 'PATCH', url: 'Items(1)', body: { Valid: 'tNO' } }, { sendRequest });
+    expect(result.isError).toBe(true);
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(ctx.execute).not.toHaveBeenCalled();
+  });
+
+  it('denies a write whose profile changed while the approval was pending', async () => {
+    const ctx = capture();
+    const sendRequest = vi.fn().mockImplementation(async () => {
+      ctx.profiles[0] = { ...ctx.profile, slAllowedMethods: ['GET'] };
+      return { action: 'accept', content: { approve: true } };
+    });
+    const result = await ctx.write({ method: 'PATCH', url: 'Items(1)', body: { Valid: 'tNO' } }, { sendRequest });
+    expect(sendRequest).toHaveBeenCalledOnce();
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('Reconnect');
+    expect(ctx.execute).not.toHaveBeenCalled();
+  });
+
+  it('leaves reads alone', async () => {
+    const ctx = capture();
+    ctx.profiles.length = 0;
+    const result = await ctx.read({ url: 'Items' }, {});
+    expect(result.isError).toBeUndefined();
+    expect(ctx.connectionManager.reload).not.toHaveBeenCalled();
   });
 });

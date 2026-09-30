@@ -78,7 +78,7 @@ export async function createServer(
   registerConnectDatabaseTool(server, adapter, slAdapter, logger, config, connectionManager, rateLimiter, coordinator, slTrustStore);
   registerSqlTool(server, adapter, logger, config, rateLimiter, coordinator);
   registerSchemaTool(server, adapter, logger, config, rateLimiter, coordinator);
-  registerServiceLayerTool(server, slAdapter, adapter, logger, config, rateLimiter, coordinator);
+  registerServiceLayerTool(server, slAdapter, adapter, logger, config, rateLimiter, coordinator, connectionManager);
   registerCheckConnectionTool(server, adapter, slAdapter, logger, config, rateLimiter, coordinator);
 
   const profileCount = connectionManager.listAll().length;

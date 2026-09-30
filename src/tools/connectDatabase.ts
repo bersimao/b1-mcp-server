@@ -225,7 +225,7 @@ function dbConnectionKey(p: ConnectionProfile): string {
   return connectionKey([p.id, p.dbType, p.dbServer, p.dbName, p.dbUser, p.dbPassword]);
 }
 
-function slConnectionKey(p: ConnectionProfile): string {
+export function slConnectionKey(p: ConnectionProfile): string {
   return connectionKey([
     p.id, p.dbName, p.slUrl, p.slUser, p.slPassword,
     p.slTlsMode, p.slTlsServerName, p.slCertificateSha256,
