@@ -43,7 +43,8 @@ function capture(overrides: Partial<Config> = {}, clientName: string | null = 'c
   const read: Handler = (args, extra) => handlers.execute_service_layer(args, extra);
   // Writes default to the connected database; a test overrides it to probe the check.
   const write: Handler = (args, extra) => handlers.execute_service_layer_write({ database: 'SBO_TEST', ...args }, extra);
-  return { read, write, schemas, sl, execute };
+  const unattended: Handler = (args, extra) => handlers.execute_service_layer_write_unattended({ database: 'SBO_TEST', ...args }, extra);
+  return { read, write, unattended, schemas, sl, execute };
 }
 
 const accept = { sendRequest: vi.fn().mockResolvedValue({ action: 'accept', content: { approve: true } }) };
@@ -276,6 +277,72 @@ describe('execute_service_layer_write approval mode', () => {
     expect(result.content[0].text).toContain('does not match the connected Service Layer database "SBO_TEST"');
     expect(sendRequest).not.toHaveBeenCalled();
     expect(ctx.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('execute_service_layer_write_unattended', () => {
+  it.each(['claude-code', 'codex-mcp-client'])('writes with no approval on a "none" profile (client %s), audited as its own rule', async (clientName) => {
+    const log = vi.spyOn(AuditLogger.prototype, 'log').mockImplementation(() => {});
+    const ctx = capture({}, clientName);
+    Object.assign(ctx.sl, { allowedMethods: ['GET', 'POST'], writeApproval: 'none' });
+    const sendRequest = vi.fn();
+
+    const result = await ctx.unattended({ method: 'POST', url: 'InventoryCountings', body: { Remarks: 'x' } }, { sendRequest });
+
+    expect(result.isError).toBeUndefined();
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(ctx.execute).toHaveBeenCalledWith({ method: 'POST', url: 'InventoryCountings', data: { Remarks: 'x' } });
+    expect(log.mock.calls.map(([entry]) => [entry.decision, entry.rule])).toContainEqual(['ALLOW', 'slWriteUnattended']);
+    log.mockRestore();
+  });
+
+  it.each(['elicitation', 'client'])('is denied on a %s profile, before approval or execution', async (writeApproval) => {
+    // The tool name alone must never skip approval: the opt-in is the profile's.
+    const log = vi.spyOn(AuditLogger.prototype, 'log').mockImplementation(() => {});
+    const ctx = capture();
+    Object.assign(ctx.sl, { writeApproval });
+    const sendRequest = vi.fn().mockResolvedValue({ action: 'accept', content: { approve: true } });
+
+    const result = await ctx.unattended({ method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }, { sendRequest });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(`slWriteApproval "${writeApproval}"`);
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(ctx.execute).not.toHaveBeenCalled();
+    expect(log.mock.calls.map(([entry]) => [entry.decision, entry.rule])).toContainEqual(['DENY', 'slWriteUnattendedNotAllowed']);
+    log.mockRestore();
+  });
+
+  it('keeps the target check, verb allowlist, input policy, dry-run and kill switch', async () => {
+    const cases: [Partial<Config>, Record<string, unknown>][] = [
+      [{}, { database: 'SBO_PROD', method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }],
+      [{}, { method: 'POST', url: 'Orders', body: { CardCode: 'C1' } }],
+      [{}, { method: 'PATCH', url: 'Items', body: { U_X: 1 } }],
+      [{ dryRun: true }, { method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }],
+      [{ slWritesEnabled: false }, { method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }],
+    ];
+    for (const [overrides, args] of cases) {
+      const ctx = capture(overrides);
+      Object.assign(ctx.sl, { writeApproval: 'none' });
+      await ctx.unattended(args, { sendRequest: vi.fn() });
+      expect(ctx.execute).not.toHaveBeenCalled();
+    }
+  });
+
+  it('leaves execute_service_layer_write on a "none" profile to the client prompt, or elicitation elsewhere', async () => {
+    const claude = capture();
+    Object.assign(claude.sl, { writeApproval: 'none' });
+    const noForm = vi.fn();
+    await claude.write({ method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }, { sendRequest: noForm });
+    expect(noForm).not.toHaveBeenCalled();
+    expect(claude.execute).toHaveBeenCalledOnce();
+
+    const codex = capture({}, 'codex-mcp-client');
+    Object.assign(codex.sl, { writeApproval: 'none' });
+    const decline = vi.fn().mockResolvedValue({ action: 'decline' });
+    await codex.write({ method: 'PATCH', url: 'Items(1)', body: { U_X: 1 } }, { sendRequest: decline });
+    expect(decline).toHaveBeenCalledOnce();
+    expect(codex.execute).not.toHaveBeenCalled();
   });
 });
 

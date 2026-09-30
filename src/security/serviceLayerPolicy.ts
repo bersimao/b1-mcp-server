@@ -17,8 +17,11 @@ export const DEFAULT_SL_ALLOWED_METHODS: readonly ServiceLayerMethod[] = ['GET',
 
 /** Who approves a Service Layer write. `elicitation` (default): the server asks
  *  through an MCP form. `client`: the server trusts the MCP client's own
- *  permission prompt, which Remote Control forwards and elicitation does not. */
-export const SL_WRITE_APPROVAL_MODES = ['elicitation', 'client'] as const;
+ *  permission prompt, which Remote Control forwards and elicitation does not.
+ *  `none`: execute_service_layer_write behaves as `client`, and the profile
+ *  also unlocks execute_service_layer_write_unattended, which writes with no
+ *  approval at all — development companies only. */
+export const SL_WRITE_APPROVAL_MODES = ['elicitation', 'client', 'none'] as const;
 export type SlWriteApproval = typeof SL_WRITE_APPROVAL_MODES[number];
 
 /** The only client whose permission prompt may replace elicitation. clientInfo
@@ -26,8 +29,10 @@ export type SlWriteApproval = typeof SL_WRITE_APPROVAL_MODES[number];
  *  inheriting a profile's client mode by accident, not a client that lies. */
 export const PERMISSION_PROMPT_CLIENT = 'claude-code';
 
-export function effectiveWriteApproval(mode: SlWriteApproval, clientName: string | undefined): SlWriteApproval {
-  return mode === 'client' && clientName === PERMISSION_PROMPT_CLIENT ? 'client' : 'elicitation';
+/** Approval for execute_service_layer_write. `none` never skips approval on
+ *  that tool: only execute_service_layer_write_unattended does. */
+export function effectiveWriteApproval(mode: SlWriteApproval, clientName: string | undefined): 'elicitation' | 'client' {
+  return mode !== 'elicitation' && clientName === PERMISSION_PROMPT_CLIENT ? 'client' : 'elicitation';
 }
 
 export interface ValidatedServiceLayerRequest {

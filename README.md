@@ -6,9 +6,10 @@ both the database (HANA / MS SQL) and the Service Layer OData API.
 
 ## Features
 
-- **6 MCP tools**: `connect_database`, `execute_sql`, `execute_service_layer`
+- **7 MCP tools**: `connect_database`, `execute_sql`, `execute_service_layer`
   (GET), `execute_service_layer_write` (PATCH / POST / DELETE),
-  `get_schema_info`, `check_connection`.
+  `execute_service_layer_write_unattended` (the same writes without approval,
+  development profiles only), `get_schema_info`, `check_connection`.
 - **Multi-environment**: switch between client databases at runtime via named
   connection profiles. No restart needed.
 - **Read-only by design**: the SQL path executes only `SELECT`. Every
@@ -123,9 +124,22 @@ honoured only when the MCP client identifies itself as Claude Code; any other
 client falls back to elicitation. The server cannot see that prompt, so the
 mode is only as strong as the client's permission settings: list
 `mcp__<server-name>__execute_service_layer_write` under `permissions.ask`,
-never `allow`, and do not use it with `--dangerously-skip-permissions`. Keep
+never `allow`, and do not use it with `--dangerously-skip-permissions`. Without
+that rule, answering the first prompt with "Yes, don't ask again" saves an
+`allow` rule and every later write runs unprompted. Keep
 production profiles on `elicitation`. `connect_database` prints the mode that
 applies to the current client; editing it re-logs the Service Layer.
+
+`"none"` is for development companies where a prompt on every write slows the
+work down. `execute_service_layer_write` behaves as in `client` mode, and the
+profile also unlocks `execute_service_layer_write_unattended`, which runs the
+same writes with **no approval at all**, for any MCP client. That tool refuses
+every profile not set to `"none"`, so you can list
+`mcp__<server-name>__execute_service_layer_write_unattended` under
+`permissions.allow` and keep the normal write tool under `permissions.ask`:
+development profiles run unprompted and every other profile still prompts. The
+opt-in lives only in the connections file, so it is only as safe as that file:
+never set `"none"` on a profile that points at production data.
 
 Both SAP Service Layer roots are supported: `/b1s/v1` for OData v3 and
 `/b1s/v2` for OData v4. Login, health checks and relative Service Layer requests
@@ -315,8 +329,10 @@ By default every write requires explicit user acceptance through MCP form
 elicitation. The approval screen is bound to the database, Service Layer root,
 endpoint, exact body, field list and SHA-256 body hash. A client without
 elicitation support cannot write. A profile with `slWriteApproval: "client"`
-replaces the form with Claude Code's permission prompt (see the profile
-fields above). `MCP_DRY_RUN=true` never executes a write,
+replaces the form with Claude Code's permission prompt, and one with
+`slWriteApproval: "none"` also accepts unapproved writes through
+`execute_service_layer_write_unattended` (see the profile fields above).
+`MCP_DRY_RUN=true` never executes a write,
 and `MCP_SL_WRITES_ENABLED=false` disables every write globally.
 
 The per-table classification model (SAP_CORE / SAP_USER / CUSTOM / TEMP with

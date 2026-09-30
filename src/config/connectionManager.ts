@@ -21,7 +21,7 @@
 //       "slTlsServerName": "sap.example.com",      // optional pinned-TLS SNI name
 //       "slCertificateSha256": "AA:BB:...",         // legacy migration only
 //       "slAllowedMethods": ["GET", "PATCH"],      // optional; default GET+PATCH
-//       "slWriteApproval": "elicitation"           // optional; or "client"
+//       "slWriteApproval": "elicitation"           // optional; or "client" / "none"
 //     }
 //   ]
 //
@@ -61,7 +61,7 @@ function parseSlWriteApproval(value: unknown): SlWriteApproval {
   if (value === undefined || value === null) return 'elicitation';
   const mode = typeof value === 'string' ? value.trim().toLowerCase() : '';
   if ((SL_WRITE_APPROVAL_MODES as readonly string[]).includes(mode)) return mode as SlWriteApproval;
-  throw new Error('Invalid slWriteApproval. Expected "elicitation" or "client".');
+  throw new Error('Invalid slWriteApproval. Expected "elicitation", "client" or "none".');
 }
 
 function parseSlTlsMode(value: unknown): 'strict' | 'pinned' | undefined {

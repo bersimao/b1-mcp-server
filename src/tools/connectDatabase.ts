@@ -610,11 +610,15 @@ Use "list" as the query to reload and list all available profiles.`,
           lines.push(`ServiceLayer TLS: ${slAdapter.getTlsStatus()}`);
           lines.push(`ServiceLayer methods: ${slAdapter.getAllowedMethods().join(', ')}`);
           const clientName = server.server.getClientVersion()?.name;
+          const profileApproval = slAdapter.getWriteApproval();
           let approval = 'elicitation (MCP approval form)';
-          if (effectiveWriteApproval(slAdapter.getWriteApproval(), clientName) === 'client') {
+          if (effectiveWriteApproval(profileApproval, clientName) === 'client') {
             approval = 'client (the MCP client\'s permission prompt; no approval form)';
-          } else if (slAdapter.getWriteApproval() === 'client') {
-            approval = `elicitation (slWriteApproval=client applies only to ${PERMISSION_PROMPT_CLIENT}; this client reports ${JSON.stringify(clientName ?? 'no name')})`;
+          } else if (profileApproval !== 'elicitation') {
+            approval = `elicitation (slWriteApproval=${profileApproval} applies only to ${PERMISSION_PROMPT_CLIENT}; this client reports ${JSON.stringify(clientName ?? 'no name')})`;
+          }
+          if (profileApproval === 'none') {
+            approval += '; execute_service_layer_write_unattended enabled (no approval at all)';
           }
           lines.push(`ServiceLayer write approval: ${approval}`);
           if (slTrustAction === 'approved-pin') lines.push(`ServiceLayer TLS trust: Certificate approved and saved to ${trustStore.getFilePath()}`);

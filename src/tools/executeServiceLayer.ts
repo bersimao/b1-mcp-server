@@ -1,7 +1,10 @@
-// Tools: execute_service_layer (GET) and execute_service_layer_write (PATCH /
-// POST / DELETE) — guarded SAP B1 Service Layer requests. Two tools, not one,
-// because client permission rules match a tool name, never its arguments: a
-// single tool meant prompting on every GET or on no write.
+// Tools: execute_service_layer (GET), execute_service_layer_write (PATCH /
+// POST / DELETE) and execute_service_layer_write_unattended (the same writes,
+// no approval, only on a profile with slWriteApproval "none") — guarded SAP B1
+// Service Layer requests. Separate tools because client permission rules match
+// a tool name, never its arguments: one tool meant prompting on every GET or on
+// no write, and a development profile could not skip the prompt without
+// production losing it too.
 
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -38,6 +41,7 @@ export function registerServiceLayerTool(
     body: Record<string, unknown> | undefined,
     extra: RequestHandlerExtra<ServerRequest, ServerNotification>,
     expectedDb?: string,
+    unattended = false,
   ) {
     const rateCheck = rateLimiter.check(tool);
     if (!rateCheck.allowed) {
@@ -62,8 +66,9 @@ export function registerServiceLayerTool(
     }[method];
     const isWrite = method !== 'GET';
     const clientName = server.server.getClientVersion()?.name;
-    const approvalMode = effectiveWriteApproval(slAdapter.getWriteApproval(), clientName);
-    const approvalRule = approvalMode === 'client' ? 'slWriteClientApproval' : 'slWriteHumanApproval';
+    const profileApproval = slAdapter.getWriteApproval();
+    const approvalMode = unattended ? 'none' : effectiveWriteApproval(profileApproval, clientName);
+    const approvalRule = { none: 'slWriteUnattended', client: 'slWriteClientApproval', elicitation: 'slWriteHumanApproval' }[approvalMode];
 
     // The client's permission prompt shows only the tool arguments. Requiring
     // the target database among them puts it in front of the approver, and
@@ -74,6 +79,18 @@ export function registerServiceLayerTool(
         tool, database: targetDb, dbType: dbType(),
         operation, tables: [], query: `${method} ${url}`,
         decision: 'DENY', reason, rule: 'slWriteTargetMismatch',
+      }));
+      return { content: [{ type: 'text' as const, text: `[DB: ${targetDb}] Request rejected: ${reason}` }], isError: true };
+    }
+
+    // The opt-in lives in the connections file, which the AI cannot edit; the
+    // tool name alone must never be enough to skip approval.
+    if (unattended && profileApproval !== 'none') {
+      const reason = `the connected profile has slWriteApproval "${profileApproval}"; unattended writes need "none". Use execute_service_layer_write.`;
+      logger.log(logger.createEntry({
+        tool, database: targetDb, dbType: dbType(),
+        operation, tables: [], query: `${method} ${url}`,
+        decision: 'DENY', reason, rule: 'slWriteUnattendedNotAllowed',
       }));
       return { content: [{ type: 'text' as const, text: `[DB: ${targetDb}] Request rejected: ${reason}` }], isError: true };
     }
@@ -141,8 +158,8 @@ export function registerServiceLayerTool(
           tool, database: targetDb, dbType: dbType(),
           operation, tables: [], query: auditQuery,
           decision: 'PENDING_CONFIRMATION',
-          reason: slAdapter.getWriteApproval() === 'client'
-            ? `Waiting for MCP form elicitation: slWriteApproval=client does not apply to client ${JSON.stringify(clientName ?? 'with no name')}.`
+          reason: profileApproval !== 'elicitation'
+            ? `Waiting for MCP form elicitation: slWriteApproval=${profileApproval} does not apply to client ${JSON.stringify(clientName ?? 'with no name')}.`
             : 'Waiting for explicit user approval through MCP form elicitation.',
           rule: 'slWriteHumanApproval',
         }));
@@ -219,8 +236,9 @@ export function registerServiceLayerTool(
         operation, tables: [], query: auditQuery,
         decision: 'ALLOW',
         reason: !isWrite ? 'Validated Service Layer GET.'
-          : approvalMode === 'client' ? `${method} approved through the permission prompt of MCP client ${clientName} (slWriteApproval=client).`
-            : `User approved exact ${method}.`,
+          : approvalMode === 'none' ? `${method} executed without approval: the profile has slWriteApproval=none.`
+            : approvalMode === 'client' ? `${method} approved through the permission prompt of MCP client ${clientName} (slWriteApproval=${profileApproval}).`
+              : `User approved exact ${method}.`,
         rule: isWrite ? approvalRule : 'serviceLayerRead',
       });
       logger.log(intent);
@@ -251,6 +269,13 @@ export function registerServiceLayerTool(
     });
   }
 
+  const writeSchema = {
+    database: z.string().describe('Connected company database exactly as connect_database prints it; shown to the approver and checked by the server'),
+    method: z.enum(['PATCH', 'POST', 'DELETE']).describe('Must also be allowed by the connected profile\'s slAllowedMethods'),
+    url: z.string().describe('Relative OData endpoint without the configured /b1s/v1/ or /b1s/v2/ root'),
+    body: z.record(z.unknown()).optional().describe('JSON object: required and non-empty for PATCH, optional for POST, forbidden for DELETE'),
+  };
+
   server.tool(
     'execute_service_layer',
     `Execute a read-only OData GET against the currently connected SAP Business One Service Layer. Writes go through execute_service_layer_write.
@@ -271,15 +296,19 @@ Denied when the connected profile's slAllowedMethods (printed by connect_databas
 
 The verb must be in the connected profile's slAllowedMethods, and database must equal the connected Service Layer database exactly — connect_database prints both. A mismatch is denied.
 
-Approval follows the profile's slWriteApproval, also printed by connect_database. "elicitation" (default): the server asks the user through an MCP approval form; clients without form elicitation cannot write. "client": the server executes after this client's own permission prompt, honoured only for Claude Code. MCP_DRY_RUN previews but never executes a write, and MCP_SL_WRITES_ENABLED=false disables every write globally.
+Approval follows the profile's slWriteApproval, also printed by connect_database. "elicitation" (default): the server asks the user through an MCP approval form; clients without form elicitation cannot write. "client" or "none": the server executes after this client's own permission prompt, honoured only for Claude Code. On a "none" profile, execute_service_layer_write_unattended does the same write without any approval. MCP_DRY_RUN previews but never executes a write, and MCP_SL_WRITES_ENABLED=false disables every write globally.
 
 PATCH and DELETE accept one directly keyed entity endpoint only. POST accepts an entity set, a service operation, or one action on a keyed entity (Orders(12)/Close). Query options, navigation paths, absolute URLs, Login/Logout and $batch are denied.`,
-    {
-      database: z.string().describe('Connected company database exactly as connect_database prints it; shown to the approver and checked by the server'),
-      method: z.enum(['PATCH', 'POST', 'DELETE']).describe('Must also be allowed by the connected profile\'s slAllowedMethods'),
-      url: z.string().describe('Relative OData endpoint without the configured /b1s/v1/ or /b1s/v2/ root'),
-      body: z.record(z.unknown()).optional().describe('JSON object: required and non-empty for PATCH, optional for POST, forbidden for DELETE'),
-    },
+    writeSchema,
     async ({ database, method, url, body }, extra) => run('execute_service_layer_write', method, url, body, extra, database),
+  );
+
+  server.tool(
+    'execute_service_layer_write_unattended',
+    `Execute a guarded OData write (PATCH, POST or DELETE) with NO approval of any kind, for development companies. Denied unless the connected profile has slWriteApproval "none" (printed by connect_database); otherwise use execute_service_layer_write. These are real writes to the company database.
+
+Every other rule of execute_service_layer_write applies unchanged: database must equal the connected Service Layer database, the verb must be in slAllowedMethods, the same endpoint shapes are enforced, MCP_DRY_RUN previews and MCP_SL_WRITES_ENABLED=false disables it.`,
+    writeSchema,
+    async ({ database, method, url, body }, extra) => run('execute_service_layer_write_unattended', method, url, body, extra, database, true),
   );
 }

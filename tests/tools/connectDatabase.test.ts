@@ -314,6 +314,13 @@ describe('connect_database profile reload and TLS enrollment', () => {
     expect(other.content[0].text).toContain(
       'ServiceLayer write approval: elicitation (slWriteApproval=client applies only to claude-code; this client reports "codex-mcp-client")',
     );
+
+    // "none" announces the unattended tool, whatever the client.
+    writeProfiles(ctx.connectionsFile, [{ ...profile, slWriteApproval: 'none' }]);
+    const none = await ctx.handler({ query: 'client_hmg' }, { sendRequest: vi.fn() });
+    expect(none.content[0].text).toContain(
+      'ServiceLayer write approval: elicitation (slWriteApproval=none applies only to claude-code; this client reports "codex-mcp-client"); execute_service_layer_write_unattended enabled (no approval at all)',
+    );
   });
 
   it('ends the Service Layer session once the profile stops configuring it', async () => {

@@ -87,12 +87,14 @@ describe('ConnectionManager.find', () => {
     const manager = createManagerWithProfiles([
       { id: 'legacy', dbType: 'hana', dbName: 'SBO_A' },
       { id: 'remote', dbType: 'hana', dbName: 'SBO_B', slWriteApproval: ' Client ' },
-      { id: 'bad', dbType: 'hana', dbName: 'SBO_C', slWriteApproval: 'none' },
+      { id: 'dev', dbType: 'hana', dbName: 'SBO_E', slWriteApproval: 'NONE' },
+      { id: 'bad', dbType: 'hana', dbName: 'SBO_C', slWriteApproval: 'off' },
       { id: 'bad_type', dbType: 'hana', dbName: 'SBO_D', slWriteApproval: true },
     ]);
 
     expect(manager.find('legacy')?.slWriteApproval).toBe('elicitation');
     expect(manager.find('remote')?.slWriteApproval).toBe('client');
+    expect(manager.find('dev')?.slWriteApproval).toBe('none');
     expect(manager.find('bad')).toBeUndefined();
     expect(manager.find('bad_type')).toBeUndefined();
   });
