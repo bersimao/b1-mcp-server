@@ -106,8 +106,8 @@ trimming. Either side, or both sides, can be configured in one profile.
 
 `slAllowedMethods` (optional) lists the HTTP verbs the Service Layer tools may
 send for that profile: any of `GET`, `PATCH`, `POST`, `DELETE`
-(case-insensitive). Without it a profile keeps the historic `["GET", "PATCH"]`;
-`["GET"]` makes a profile read-only. `PUT` is not supported, because it
+(case-insensitive). Without it a profile is read-only (`["GET"]`); every write
+verb must be listed explicitly. `PUT` is not supported, because it
 replaces the whole entity and wipes every field the body omits. An invalid
 value (unknown verb, empty list, not an array) skips that profile instead of
 guessing. The list is applied on connect and printed by `connect_database`;
@@ -319,7 +319,7 @@ unterminated quotes or brackets, sequence advancement (`NEXTVAL` /
 `REPEATABLEREAD`).
 
 Service Layer requests allow only the verbs in the profile's `slAllowedMethods`
-(default `GET` and `PATCH`); `PUT` is never available. PATCH and DELETE require
+(default `GET` only); `PUT` is never available. PATCH and DELETE require
 one directly keyed entity endpoint; POST accepts an entity set, a service
 operation or one action on a keyed entity (`Orders(12)/Close`); writes take no
 query options. Writes go through a separate tool, `execute_service_layer_write`,

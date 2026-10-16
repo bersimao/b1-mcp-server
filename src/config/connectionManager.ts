@@ -20,7 +20,7 @@
 //       "slTlsMode": "pinned",                     // legacy migration only
 //       "slTlsServerName": "sap.example.com",      // optional pinned-TLS SNI name
 //       "slCertificateSha256": "AA:BB:...",         // legacy migration only
-//       "slAllowedMethods": ["GET", "PATCH"],      // optional; default GET+PATCH
+//       "slAllowedMethods": ["GET", "PATCH"],      // optional; default GET only
 //       "slWriteApproval": "elicitation"           // optional; or "client" / "none"
 //     }
 //   ]

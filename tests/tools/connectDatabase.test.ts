@@ -44,7 +44,7 @@ function slConnectionKey(profile: Record<string, unknown>): string {
   return createHash('sha256').update(JSON.stringify([
     profile.id, profile.dbName, profile.slUrl, profile.slUser, profile.slPassword,
     profile.slTlsMode, profile.slTlsServerName, profile.slCertificateSha256,
-    [...((profile.slAllowedMethods as string[] | undefined) ?? ['GET', 'PATCH'])].sort(),
+    [...((profile.slAllowedMethods as string[] | undefined) ?? ['GET'])].sort(),
     profile.slWriteApproval ?? 'elicitation',
   ])).digest('hex');
 }
@@ -265,6 +265,7 @@ describe('connect_database profile reload and TLS enrollment', () => {
     const profile = {
       id: 'client_hmg', dbType: 'hana', dbName: 'SBO_CLIENT',
       slUrl: 'https://sap.example.com:50000/b1s/v2', slUser: 'sl-user', slPassword: 'sl-secret',
+      slAllowedMethods: ['GET', 'PATCH'],
     };
     Object.assign(ctx.sl, {
       dbName: 'SBO_CLIENT', slUrl: profile.slUrl, cookie: 'B1SESSION=live',

@@ -45,7 +45,7 @@ function capture(overrides: Partial<Config> = {}, clientName: string | null = 'c
   const sl = new ServiceLayerAdapter();
   Object.assign(sl, {
     dbName: 'SBO_TEST', slUrl: 'https://sap/b1s/v1', cookie: 'B1SESSION=x', initialised: true,
-    connectionKey: slConnectionKey(profile),
+    connectionKey: slConnectionKey(profile), allowedMethods: profile.slAllowedMethods,
   });
   const execute = vi.spyOn(sl, 'execute').mockResolvedValue({ data: null, durationMs: 3 });
   const effective = { ...config, ...overrides };

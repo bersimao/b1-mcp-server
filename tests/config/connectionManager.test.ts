@@ -57,13 +57,13 @@ describe('ConnectionManager.find', () => {
     });
   });
 
-  it('defaults slAllowedMethods to GET and PATCH and normalises an explicit list', () => {
+  it('defaults slAllowedMethods to GET only and normalises an explicit list', () => {
     const manager = createManagerWithProfiles([
       { id: 'legacy', dbType: 'hana', dbName: 'SBO_A' },
       { id: 'writer', dbType: 'hana', dbName: 'SBO_B', slAllowedMethods: ['get', ' POST ', 'GET', 'delete'] },
     ]);
 
-    expect(manager.find('legacy')?.slAllowedMethods).toEqual(['GET', 'PATCH']);
+    expect(manager.find('legacy')?.slAllowedMethods).toEqual(['GET']);
     expect(manager.find('writer')?.slAllowedMethods).toEqual(['GET', 'POST', 'DELETE']);
   });
 

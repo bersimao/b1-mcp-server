@@ -12,8 +12,9 @@ const VALIDATION_ROOT_URL = `https://mcp.invalid${VALIDATION_ROOT_PATH}`;
 export const SERVICE_LAYER_METHODS = ['GET', 'PATCH', 'POST', 'DELETE'] as const;
 export type ServiceLayerMethod = typeof SERVICE_LAYER_METHODS[number];
 
-/** Allowed verbs for a profile without slAllowedMethods — the pre-allowlist behaviour. */
-export const DEFAULT_SL_ALLOWED_METHODS: readonly ServiceLayerMethod[] = ['GET', 'PATCH'];
+/** Allowed verbs for a profile without slAllowedMethods: read-only. Every write
+ *  verb (PATCH, POST, DELETE) is opt-in per profile. */
+export const DEFAULT_SL_ALLOWED_METHODS: readonly ServiceLayerMethod[] = ['GET'];
 
 /** Who approves a Service Layer write. `elicitation` (default): the server asks
  *  through an MCP form. `client`: the server trusts the MCP client's own
