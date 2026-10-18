@@ -340,6 +340,15 @@ per-operation rules) still exists in `src/guardrails/rules/` and is fully
 tested, but on the read-only server it is not reachable from the live path.
 See [SECURITY.md](./SECURITY.md) for the full model and its known limitations.
 
+## Agent skill
+
+[`skills/b1-mcp-server/SKILL.md`](skills/b1-mcp-server/SKILL.md) teaches an AI agent how
+to use these tools: connect first, what each refusal means and what to do about it, why a
+HANA timeout reports a dropped socket, how truncated results look, and how Service Layer
+writes are approved. To install it in Claude Code, copy the folder into
+`~/.claude/skills/`; other agents that read `SKILL.md` files take it from their own skills
+directory.
+
 ## Development
 
 ```bash
