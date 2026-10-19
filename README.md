@@ -4,6 +4,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/npm/l/b1-mcp-server" alt="license"></a>
   <img src="https://img.shields.io/node/v/b1-mcp-server" alt="node version">
   <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-server-blue" alt="MCP server"></a>
+  <img src="https://img.shields.io/badge/SAP-Business%20One-0FAAFF?logo=sap&logoColor=white" alt="SAP Business One">
 </p>
 
 <p align="center"><img src="assets/logo.png" alt="b1-mcp-server logo" width="160"></p>
