@@ -33,7 +33,7 @@ import { createShutdown } from './shutdown.js';
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  const { server, adapter, slAdapter } = await createServer(new DirectDb());
+  const { server, adapter, slAdapter, toolNames } = await createServer(new DirectDb());
   const transport = new StdioServerTransport();
 
   // Protocol.onclose, not transport.onclose: the SDK wraps the transport's
@@ -47,7 +47,7 @@ async function main(): Promise<void> {
   await server.connect(transport);
 
   console.error('[b1-mcp-server] Server running on stdio transport.');
-  console.error('[b1-mcp-server] Tools: connect_database, execute_sql, execute_service_layer, get_schema_info, check_connection');
+  console.error(`[b1-mcp-server] Tools: ${toolNames.join(', ')}`);
 }
 
 main().catch((error) => {

@@ -40,6 +40,8 @@ export interface CreatedServer {
   /** Exposed so the entry point can disconnect both sides on shutdown. */
   adapter: DbAdapter;
   slAdapter: ServiceLayerAdapter;
+  /** Names passed to server.tool(), in registration order, for the startup log. */
+  toolNames: string[];
 }
 
 /**
@@ -74,6 +76,15 @@ export async function createServer(
     version: SERVER_VERSION,
   });
 
+  // Record each name through the public server.tool(): the SDK keeps its
+  // registry private, and a hand-written list in the startup log went stale.
+  const toolNames: string[] = [];
+  const registerTool = server.tool.bind(server) as (name: string, ...rest: unknown[]) => unknown;
+  server.tool = ((name: string, ...rest: unknown[]) => {
+    toolNames.push(name);
+    return registerTool(name, ...rest);
+  }) as typeof server.tool;
+
   // Register tools — all tools share the same adapters (single active connection)
   registerConnectDatabaseTool(server, adapter, slAdapter, logger, config, connectionManager, rateLimiter, coordinator, slTrustStore);
   registerSqlTool(server, adapter, logger, config, rateLimiter, coordinator);
@@ -86,5 +97,5 @@ export async function createServer(
     `All tools registered. No database connected. ${profileCount} profile(s) available — use connect_database tool.`
   );
 
-  return { server, adapter, slAdapter };
+  return { server, adapter, slAdapter, toolNames };
 }

@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- The startup log listed tools by hand and named only 5 of the 7. It now prints the names
+  recorded as each tool is registered.
+
 ## [1.5.1] - 2026-10-19
 
 ### Added
