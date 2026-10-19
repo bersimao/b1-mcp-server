@@ -1,6 +1,7 @@
 {
   "name": "b1-mcp-server",
-  "version": "1.5.0",
+  "version": "1.5.1",
+  "mcpName": "io.github.bersimao/b1-mcp-server",
   "description": "Secure MCP server for SAP Business One database (HANA / MS SQL) and Service Layer operations",
   "type": "module",
   "main": "dist/index.js",
