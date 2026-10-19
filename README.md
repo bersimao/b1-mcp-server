@@ -1,3 +1,11 @@
+<p align="center">
+  <a href="https://www.npmjs.com/package/b1-mcp-server"><img src="https://img.shields.io/npm/v/b1-mcp-server" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/b1-mcp-server"><img src="https://img.shields.io/npm/dm/b1-mcp-server" alt="npm downloads"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/npm/l/b1-mcp-server" alt="license"></a>
+  <img src="https://img.shields.io/node/v/b1-mcp-server" alt="node version">
+  <a href="https://modelcontextprotocol.io"><img src="https://img.shields.io/badge/MCP-server-blue" alt="MCP server"></a>
+</p>
+
 <p align="center"><img src="assets/logo.png" alt="b1-mcp-server logo" width="160"></p>
 
 # b1-mcp-server
