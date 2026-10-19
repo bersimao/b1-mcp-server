@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.png" alt="b1-mcp-server logo" width="160"></p>
+
 # b1-mcp-server
 
 A secure [Model Context Protocol](https://modelcontextprotocol.io) server that
