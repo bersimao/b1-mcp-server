@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- MCP Registry title is now "b1-mcp: MCP server for SAP B1".
+- Package and registry description no longer start with "Secure".
+
 ### Fixed
 - The startup log listed tools by hand and named only 5 of the 7. It now prints the names
   recorded as each tool is registered.
