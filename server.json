@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.bersimao/b1-mcp-server",
-  "title": "b1-mcp: MCP server for SAP B1",
+  "title": "b1-mcp-server for SAP B1",
   "description": "MCP server for SAP Business One database (HANA / MS SQL) and Service Layer operations",
   "repository": {
     "url": "https://github.com/bersimao/b1-mcp-server",
