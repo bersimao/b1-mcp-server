@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-10-26
+
 ### Changed
 - MCP Registry title is now "b1-mcp-server for SAP B1".
 - Package and registry description no longer start with "Secure".
@@ -61,7 +63,8 @@ All notable changes to this project are documented here. The format follows
 
 Versions before 1.4.0: see the git history.
 
-[Unreleased]: https://github.com/bersimao/b1-mcp-server/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/bersimao/b1-mcp-server/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/bersimao/b1-mcp-server/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/bersimao/b1-mcp-server/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/bersimao/b1-mcp-server/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/bersimao/b1-mcp-server/compare/v1.3.2...v1.4.0
