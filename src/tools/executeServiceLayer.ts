@@ -300,7 +300,7 @@ export function registerServiceLayerTool(
     database: z.string().describe('Connected company database exactly as connect_database prints it; shown to the approver and checked by the server'),
     method: z.enum(['PATCH', 'POST', 'DELETE']).describe('Must also be allowed by the connected profile\'s slAllowedMethods'),
     url: z.string().describe('Relative OData endpoint without the configured /b1s/v1/ or /b1s/v2/ root'),
-    body: z.record(z.unknown()).optional().describe('JSON object: required and non-empty for PATCH, optional for POST, forbidden for DELETE'),
+    body: z.record(z.string(), z.unknown()).optional().describe('JSON object: required and non-empty for PATCH, optional for POST, forbidden for DELETE'),
   };
 
   server.tool(

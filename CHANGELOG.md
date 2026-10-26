@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-26
+
+### Changed
+- **Requires Node.js 22 or newer** (was 20). `mssql` 12 depends on `tedious` 20, which declares
+  Node >= 22. Previous releases already pulled `@azure/*` packages that required Node 22, so
+  the old `>=20` declaration was inaccurate; Node 20 reached end of life in April 2026.
+- `mssql` 11 → 12 (`tedious` 18 → 20). No code change; the real-server driver harness passes
+  on MS SQL (timeout shape and pool recovery unchanged) and HANA.
+- `zod` 3 → 4. The Service Layer write `body` schema now declares its string keys explicitly;
+  the JSON Schema sent to clients is unchanged in meaning.
+
+### Security
+- `zod` 4.6.7 clears the zod advisory affecting versions below 4.6.6.
+- Known, not yet fixable: [GHSA-xcx6-jx8p-x3h5](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5)
+  in `@azure/msal-node` (via `tedious` → `@azure/identity`). It affects MSAL's auth-code flow,
+  which only Azure AD sign-in uses; this server uses SQL logins only. Already present in 1.5.2;
+  waiting on an `@azure/identity` release that allows the patched msal-node 7.1.
+
 ## [1.5.2] - 2026-10-26
 
 ### Changed
@@ -63,7 +81,8 @@ All notable changes to this project are documented here. The format follows
 
 Versions before 1.4.0: see the git history.
 
-[Unreleased]: https://github.com/bersimao/b1-mcp-server/compare/v1.5.2...HEAD
+[Unreleased]: https://github.com/bersimao/b1-mcp-server/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/bersimao/b1-mcp-server/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/bersimao/b1-mcp-server/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/bersimao/b1-mcp-server/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/bersimao/b1-mcp-server/compare/v1.4.0...v1.5.0
