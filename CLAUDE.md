@@ -8,7 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Read-only SQL posture:** DirectDb executes only `SELECT` (and anonymous blocks whose statements are all reads); every `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` is blocked. Service Layer allows the verbs in each profile's `slAllowedMethods` (default `GET` only; `PATCH` / `POST` / `DELETE` opt-in; never `PUT`). Every write goes through its own tool and, by default, requires explicit user acceptance through MCP form elicitation; clients without elicitation support fail closed. A profile with `slWriteApproval: "client"` relies on Claude Code's permission prompt instead (only when the client reports itself as `claude-code`); `"none"` does the same and also unlocks `execute_service_layer_write_unattended`, which writes with no approval (development companies only). SQL writes remain the human's job.
 
-The server starts **without** any database or Service Layer connection. The AI must call `connect_database` to load a profile from `~/.claude/connections.json` and connect whichever side(s) that profile configures. There is no env-var fallback — credentials live exclusively in that file.
+The server starts **without** any database or Service Layer connection. The AI must call `connect_database` to load a profile from `~/.claude/connections.json` and connect whichever side(s) that profile configures. There is no env-var fallback — credentials live exclusively in that file, or in its encrypted sibling `connections.enc.json`.
+
+**Encrypted credentials** ([src/config/vault.ts](src/config/vault.ts), [src/config/unlockSocket.ts](src/config/unlockSocket.ts), [src/cli/creds.ts](src/cli/creds.ts)): AES-256-GCM + scrypt. `ConnectionManager` exposes an explicit state (`none` / `plain` / `locked` / `unlocked` / `conflict` / `error`); callers must surface `blockedReason()` instead of reporting "no profiles". The salt stays fixed across CLI edits so a running server's in-memory key keeps decrypting on `reload()`; only `creds passwd` changes it, which re-locks running servers and reopens their unlock socket (`onLocked`). `index.ts` dispatches `creds` with dynamic imports so the CLI never loads the drivers. Tests never touch the real `~/.claude` files: point `MCP_CONNECTIONS_FILE` / the `plainPath` dep at a temp dir. The end-to-end `creds` flow needs a real TTY, so the user runs it by hand.
 
 End-user docs (install, connection profile shape, security posture) are in [README.md](README.md). This file is for working *on* the codebase.
 
@@ -161,7 +163,8 @@ Always blocked in raw SQL regardless: `EXEC` / `EXECUTE` / `CALL`, `CREATE` / `A
 src/
   index.ts            entry, constructs DirectDb, bootstraps
   server.ts           factory: registers all tools, shares adapters
-  config/             settings + connection-profile loader
+  config/             settings, connection-profile loader, vault (encryption), unlock socket
+  cli/                `b1-mcp creds …` (encrypted credentials CLI)
   db/                 directDb.ts (the driver) + adapter.ts (wrapper)
   sl/                 strict-TLS Service Layer adapter
   types/drivers.d.ts  minimal ambient types for the three CJS drivers

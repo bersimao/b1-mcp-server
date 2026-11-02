@@ -298,7 +298,9 @@ export function registerConnectDatabaseTool(
   const profiles = connectionManager.listAll();
   const profileList = profiles.length > 0
     ? profiles.map(p => `  - "${p.id}" -> ${p.dbName} (${p.dbType}) [${formatCapabilities(p)}]`).join('\n')
-    : '  (no profiles loaded)';
+    : connectionManager.getState() === 'locked'
+      ? '  (encrypted credentials; use "list" to see the profiles)'
+      : '  (no profiles loaded)';
 
   server.tool(
     'connect_database',
@@ -345,6 +347,16 @@ Use "list" as the query to reload and list all available profiles.`,
       // already active, without requiring a server restart or a separate list.
       connectionManager.reload();
 
+      // Locked, conflicting or unreadable credentials: say exactly that,
+      // never "no profiles found". The passphrase is never asked for here
+      // (MCP form elicitation must not collect secrets).
+      const blocked = connectionManager.blockedReason();
+      if (blocked) {
+        return { content: [{ type: 'text' as const, text: blocked }], isError: true };
+      }
+      const plainWarning = connectionManager.plainTextWarning();
+      const withWarning = (text: string) => plainWarning ? `${text}\n\nWARNING: ${plainWarning}` : text;
+
       // Special "list" command: show the profiles reloaded above
       if (query.toLowerCase() === 'list') {
         const allProfiles = connectionManager.listAll();
@@ -353,7 +365,8 @@ Use "list" as the query to reload and list all available profiles.`,
           return {
             content: [{
               type: 'text' as const,
-              text: `No connection profiles found.\nFile: ${connectionManager.getFilePath()}\n\nCreate the file with an array of connection objects.`,
+              text: connectionManager.missingFileHint() ??
+                `No connection profiles found in ${connectionManager.getFilePath()}.`,
             }],
           };
         }
@@ -368,7 +381,7 @@ Use "list" as the query to reload and list all available profiles.`,
         return {
           content: [{
             type: 'text' as const,
-            text: `Available connection profiles (${allProfiles.length}):\n${lines.join('\n')}`,
+            text: withWarning(`Available connection profiles (${allProfiles.length}):\n${lines.join('\n')}`),
           }],
         };
       }
@@ -637,6 +650,7 @@ Use "list" as the query to reload and list all available profiles.`,
       const slLockoutWarn = formatLockoutWarning(profile.id, 'ServiceLayer', attempts.sl);
       if (dbLockoutWarn) lines.push(dbLockoutWarn);
       if (slLockoutWarn) lines.push(slLockoutWarn);
+      if (plainWarning) lines.push(`WARNING: ${plainWarning}`);
 
       // Audit
       const auditEntry = logger.createEntry({

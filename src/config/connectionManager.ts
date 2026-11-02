@@ -27,7 +27,8 @@
 //
 // ============================================================================
 
-import { readFileSync, statSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
+import { deriveKey, encryptedPathFor, open, parseEnvelope } from './vault.js';
 import { resolve } from 'path';
 import { homedir } from 'os';
 import { DbType } from '../types/index.js';
@@ -138,89 +139,245 @@ export interface ConnectionProfile {
 // Connection Manager
 // ---------------------------------------------------------------------------
 
+/**
+ * Validates a parsed profile array. One bad profile is skipped, the rest are
+ * kept. Shared by the server loader and the `creds` CLI.
+ */
+export function parseProfiles(parsed: unknown, onSkip: (msg: string) => void = m => console.error(m)): ConnectionProfile[] {
+  if (!Array.isArray(parsed)) throw new Error('the connections file must contain a JSON array.');
+  // Parsed per profile, not with a single .map(): a throw from one bad
+  // field (an invalid slTlsMode, say) used to escape to the outer catch and
+  // leave `profiles` empty, so one typo silently disabled every unrelated
+  // environment in the file. Skip the offending profile, keep the rest.
+  const accepted: ConnectionProfile[] = [];
+  for (const [index, p] of (parsed as unknown[]).entries()) {
+    try {
+      if (typeof p !== 'object' || p === null || Array.isArray(p)) {
+        throw new Error('profile must be a JSON object.');
+      }
+      const raw = p as Record<string, unknown>;
+      accepted.push({
+        id: requiredTrimmedString(raw.id, 'id'),
+        dbType: parseDbType(raw.dbType),
+        dbServer: optionalTrimmedString(raw.dbServer, 'dbServer') || '',
+        dbName: requiredTrimmedString(raw.dbName, 'dbName'),
+        dbUser: optionalTrimmedString(raw.dbUser, 'dbUser') || '',
+        dbPassword: optionalPassword(raw.dbPassword, 'dbPassword') || '',
+        slUrl: optionalTrimmedString(raw.slUrl, 'slUrl'),
+        slUser: optionalTrimmedString(raw.slUser, 'slUser'),
+        slPassword: optionalPassword(raw.slPassword, 'slPassword'),
+        slTlsMode: parseSlTlsMode(raw.slTlsMode),
+        slTlsServerName: optionalTrimmedString(raw.slTlsServerName, 'slTlsServerName'),
+        slCertificateSha256: optionalTrimmedString(raw.slCertificateSha256, 'slCertificateSha256'),
+        slAllowedMethods: parseSlAllowedMethods(raw.slAllowedMethods),
+        slWriteApproval: parseSlWriteApproval(raw.slWriteApproval),
+      });
+    } catch (err: any) {
+      const label = typeof p === 'object' && p !== null && 'id' in p
+        ? JSON.stringify((p as Record<string, unknown>).id)
+        : `at index ${index}`;
+      onSkip(`[connectionManager] Skipping profile ${label}: ${err.message}`);
+    }
+  }
+  return accepted;
+}
+
+/**
+ * JSON.parse without its error text: V8 quotes the input around the error
+ * (`..."Password":S3cretPass"...`), and these errors reach the AI through
+ * blockedReason(). A typo next to a password would leak part of it.
+ */
+export function parseJsonQuiet(text: string, label: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`${label} is not valid JSON (check quotes and commas; details are hidden because the file holds passwords).`);
+  }
+}
+
+/** Refuses a credentials file that other users can read or write. */
+export function checkOwnerOnly(path: string): void {
+  if (process.platform === 'win32') return;
+  const mode = statSync(path).mode & 0o777;
+  if ((mode & 0o077) !== 0) {
+    throw new Error(
+      `Refusing to load credentials from ${path}: permissions are ${mode.toString(8)}, expected 600. ` +
+      `Run: chmod 600 ${path}`,
+    );
+  }
+}
+
+/** The command a user can paste to run the credentials CLI of THIS install. */
+export function credsCommand(sub: string): string {
+  const entry = process.argv[1];
+  // Launched through npx: the entry lives in npm's hidden _npx cache.
+  if (!entry || /[\\/]_npx[\\/]/.test(entry)) return `npx b1-mcp-server creds ${sub}`;
+  return `node ${entry} creds ${sub}`;
+}
+
+/**
+ * none     - no connections file at all
+ * plain    - plain-text file loaded (optional mode, warned)
+ * locked   - encrypted file present, no key in memory yet
+ * unlocked - encrypted file decrypted with the in-memory key
+ * conflict - both files present; the plain-text one is refused
+ * error    - a file exists but could not be read/parsed
+ */
+export type CredentialState = 'none' | 'plain' | 'locked' | 'unlocked' | 'conflict' | 'error';
+
 export class ConnectionManager {
   private profiles: ConnectionProfile[] = [];
   private filePath: string;
+  private encFilePath: string;
   private loaded = false;
+  private state: CredentialState = 'none';
+  private stateDetail = '';
+  private key: Buffer | undefined;
+  /** Called every time load() lands in the locked state (startup, passphrase change). */
+  onLocked: (() => void) | undefined;
+  /** Set when the unlock socket gave up after too many wrong passphrases. */
+  unlockDisabled = false;
 
   constructor(filePath?: string) {
-    this.filePath = filePath || resolve(homedir(), '.claude', 'connections.json');
+    this.filePath = resolve(filePath || resolve(homedir(), '.claude', 'connections.json'));
+    this.encFilePath = encryptedPathFor(this.filePath);
   }
 
   /**
-   * Loads connection profiles from the JSON file.
-   * Does not throw if the file is missing - just returns empty list.
+   * Loads connection profiles. Never throws: every failure lands in
+   * getState()/blockedReason() with an empty profile list, so callers can tell
+   * "locked" apart from "no profiles".
    */
   load(): void {
-    try {
-      if (process.platform !== 'win32') {
-        const mode = statSync(this.filePath).mode & 0o777;
-        if ((mode & 0o077) !== 0) {
-          throw new Error(
-            `Refusing to load credentials from ${this.filePath}: permissions are ${mode.toString(8)}, expected 600. ` +
-            `Run: chmod 600 ${this.filePath}`,
-          );
-        }
-      }
-      const raw = readFileSync(this.filePath, 'utf-8');
-      const parsed = JSON.parse(raw);
+    this.profiles = [];
+    this.loaded = true;
+    const encExists = existsSync(this.encFilePath);
+    const plainExists = existsSync(this.filePath);
 
-      if (!Array.isArray(parsed)) {
-        console.error(`[connectionManager] ${this.filePath} must contain a JSON array.`);
-        this.profiles = [];
-        this.loaded = true;
-        return;
-      }
-
-      // Parsed per profile, not with a single .map(): a throw from one bad
-      // field (an invalid slTlsMode, say) used to escape to the outer catch and
-      // leave `profiles` empty, so one typo silently disabled every unrelated
-      // environment in the file. Skip the offending profile, keep the rest.
-      const accepted: ConnectionProfile[] = [];
-      for (const [index, p] of (parsed as unknown[]).entries()) {
-        try {
-          if (typeof p !== 'object' || p === null || Array.isArray(p)) {
-            throw new Error('profile must be a JSON object.');
-          }
-          const raw = p as Record<string, unknown>;
-          accepted.push({
-            id: requiredTrimmedString(raw.id, 'id'),
-            dbType: parseDbType(raw.dbType),
-            dbServer: optionalTrimmedString(raw.dbServer, 'dbServer') || '',
-            dbName: requiredTrimmedString(raw.dbName, 'dbName'),
-            dbUser: optionalTrimmedString(raw.dbUser, 'dbUser') || '',
-            dbPassword: optionalPassword(raw.dbPassword, 'dbPassword') || '',
-            slUrl: optionalTrimmedString(raw.slUrl, 'slUrl'),
-            slUser: optionalTrimmedString(raw.slUser, 'slUser'),
-            slPassword: optionalPassword(raw.slPassword, 'slPassword'),
-            slTlsMode: parseSlTlsMode(raw.slTlsMode),
-            slTlsServerName: optionalTrimmedString(raw.slTlsServerName, 'slTlsServerName'),
-            slCertificateSha256: optionalTrimmedString(raw.slCertificateSha256, 'slCertificateSha256'),
-            slAllowedMethods: parseSlAllowedMethods(raw.slAllowedMethods),
-            slWriteApproval: parseSlWriteApproval(raw.slWriteApproval),
-          });
-        } catch (err: any) {
-          const label = typeof p === 'object' && p !== null && 'id' in p
-            ? JSON.stringify((p as Record<string, unknown>).id)
-            : `at index ${index}`;
-          console.error(
-            `[connectionManager] Skipping profile ${label}: ${err.message}`,
-          );
-        }
-      }
-      this.profiles = accepted;
-
-      this.loaded = true;
-      console.error(`[connectionManager] Loaded ${this.profiles.length} connection profile(s) from ${this.filePath}`);
-    } catch (err: any) {
-      if (err.code === 'ENOENT') {
-        console.error(`[connectionManager] No connections file found at ${this.filePath}. Use connect_database tool after creating the file.`);
-      } else {
-        console.error(`[connectionManager] Error reading ${this.filePath}: ${err.message}`);
-      }
-      this.profiles = [];
-      this.loaded = true;
+    if (encExists && plainExists) {
+      this.setState('conflict',
+        `Both ${this.encFilePath} and the plain-text ${this.filePath} exist. The plain-text file is refused ` +
+        `while an encrypted one is present: delete it (and change the passwords it held, since old copies may survive in backups).`);
+      return;
     }
+
+    if (encExists && process.platform === 'win32') {
+      this.setState('error',
+        `Encrypted credentials are not supported on native Windows yet (no private Unix socket for the unlock). ` +
+        `Use the plain-text file there, or run the server under WSL.`);
+      return;
+    }
+
+    if (encExists) {
+      try {
+        checkOwnerOnly(this.encFilePath);
+        const envelope = parseEnvelope(readFileSync(this.encFilePath, 'utf-8'));
+        if (!this.key) {
+          this.setState('locked', this.unlockDisabled
+            ? 'Credentials are encrypted and locked. Unlock is disabled after too many wrong passphrases: restart the MCP server, then run in a terminal: ' + credsCommand('unlock')
+            : `Credentials are encrypted and locked. Run in a terminal: ${credsCommand('unlock')}`);
+          this.onLocked?.();
+          return;
+        }
+        let plaintext: string;
+        try {
+          plaintext = open(envelope, this.key);
+        } catch {
+          // The file was re-encrypted under a new passphrase (creds passwd) or replaced.
+          this.lock();
+          this.setState('locked',
+            `The encrypted credentials no longer match the key in memory (passphrase changed?). ` +
+            `Run in a terminal: ${credsCommand('unlock')}`);
+          this.onLocked?.();
+          return;
+        }
+        this.profiles = parseProfiles(parseJsonQuiet(plaintext, 'The decrypted connections data'));
+        this.setState('unlocked', '');
+        console.error(`[connectionManager] Loaded ${this.profiles.length} connection profile(s) from ${this.encFilePath}`);
+      } catch (err: any) {
+        this.setState('error', `Error reading ${this.encFilePath}: ${err.message}`);
+        console.error(`[connectionManager] ${this.stateDetail}`);
+      }
+      return;
+    }
+
+    if (!plainExists) {
+      this.setState('none',
+        `No connections file found. Create the encrypted one with: ${credsCommand('init')}`);
+      console.error(`[connectionManager] No connections file found at ${this.filePath} or ${this.encFilePath}.`);
+      return;
+    }
+
+    try {
+      checkOwnerOnly(this.filePath);
+      this.profiles = parseProfiles(parseJsonQuiet(readFileSync(this.filePath, 'utf-8'), 'The connections file'));
+      this.setState('plain',
+        `Credentials are stored in plain text (${this.filePath}). Encrypt them with: ${credsCommand('migrate')}`);
+      console.error(`[connectionManager] Loaded ${this.profiles.length} connection profile(s) from ${this.filePath}`);
+      console.error(`[connectionManager] WARNING: ${this.stateDetail}`);
+    } catch (err: any) {
+      this.setState('error', `Error reading ${this.filePath}: ${err.message}`);
+      console.error(`[connectionManager] ${this.stateDetail}`);
+    }
+  }
+
+  private setState(state: CredentialState, detail: string): void {
+    this.state = state;
+    this.stateDetail = detail;
+  }
+
+  getState(): CredentialState {
+    if (!this.loaded) this.load();
+    return this.state;
+  }
+
+  /** Why no profile can be used right now, or undefined when profiles loaded (or simply none exist). */
+  blockedReason(): string | undefined {
+    const s = this.getState();
+    return s === 'locked' || s === 'conflict' || s === 'error' ? this.stateDetail : undefined;
+  }
+
+  /** Warning for the optional plain-text mode; undefined otherwise. */
+  plainTextWarning(): string | undefined {
+    return this.getState() === 'plain' ? this.stateDetail : undefined;
+  }
+
+  /** Message shown when nothing at all is configured. */
+  missingFileHint(): string | undefined {
+    return this.getState() === 'none' ? this.stateDetail : undefined;
+  }
+
+  /**
+   * Derives the key from a passphrase and keeps it if it decrypts the current
+   * file. Only the key is kept; the caller owns the passphrase.
+   */
+  async unlock(passphrase: string): Promise<boolean> {
+    if (!existsSync(this.encFilePath)) throw new Error('No encrypted connections file to unlock.');
+    checkOwnerOnly(this.encFilePath);
+    const envelope = parseEnvelope(readFileSync(this.encFilePath, 'utf-8'));
+    const key = await deriveKey(passphrase, envelope.kdf);
+    try {
+      open(envelope, key);
+    } catch {
+      key.fill(0);
+      return false;
+    }
+    this.lock();
+    this.key = key;
+    this.load();
+    // The file can change between the check above and load() (creds passwd),
+    // or decrypt to something unusable: report the state actually reached.
+    return this.state === 'unlocked';
+  }
+
+  isUnlocked(): boolean {
+    return this.key !== undefined;
+  }
+
+  /** Drops and zeroes the in-memory key. */
+  lock(): void {
+    this.key?.fill(0);
+    this.key = undefined;
   }
 
   /**
@@ -305,5 +462,9 @@ export class ConnectionManager {
 
   getFilePath(): string {
     return this.filePath;
+  }
+
+  getEncryptedFilePath(): string {
+    return this.encFilePath;
   }
 }

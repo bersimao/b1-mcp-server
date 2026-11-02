@@ -169,6 +169,58 @@ installation. SAP deprecated OData v3 starting with SAP Business One 10.0 FP
 installation supports it; see the
 [Service Layer API reference](https://help.sap.com/doc/056f69366b5345a386bb8149f1700c19/10.0/en-US/Service%20Layer%20API%20Reference.html).
 
+### Encrypted credentials (optional, recommended)
+
+The profiles can be stored encrypted in `~/.claude/connections.enc.json`
+instead of the plain-text file (same profile array, AES-256-GCM, key derived
+from a passphrase with scrypt). Manage it with the `creds` subcommand of the
+same binary. Every command reads the passphrase and the passwords **only from
+an interactive terminal**: never from an argument, environment variable or
+pipe, so they stay out of shell history and out of anything an AI tool call
+can type.
+
+```bash
+b1-mcp creds migrate      # encrypt the existing plain-text file (once)
+b1-mcp creds init         # or start an empty encrypted file
+b1-mcp creds add          # add a profile
+b1-mcp creds edit <id>    # Enter keeps a value, "-" clears it
+b1-mcp creds remove <id>
+b1-mcp creds list         # ids and capabilities, never passwords
+b1-mcp creds passwd       # change the passphrase
+b1-mcp creds unlock       # unlock every running server
+```
+
+With npx, the same commands are `npx b1-mcp-server creds …` (for example
+`npx b1-mcp-server creds edit client_a_prd`). From a clone, run
+`node /path/to/dist/index.js creds …`. The `<id>` is the first column of
+`creds list` (or of `connect_database` with `"list"`). The locked server prints
+the exact unlock command for its own install.
+
+- With an encrypted file the server starts **locked**: `connect_database`
+  answers with the unlock command and nothing else. Run `creds unlock` in your
+  own terminal. It sends the passphrase over a Unix socket in a private
+  directory (`$XDG_RUNTIME_DIR/b1-mcp/`, or `~/.claude/run/`; mode `0700`,
+  socket `0600`). The server keeps only the derived key in memory, closes the
+  socket, and stops accepting attempts after 5 wrong passphrases until it
+  restarts. One `unlock` reaches every running server (Claude Code, Codex…).
+- The passphrase is never asked for through the MCP client.
+- `add` / `edit` / `remove` take effect on the next `connect_database` without
+  a new unlock. After `passwd`, running servers lock again on their next read.
+- `migrate` does not delete the plain-text file. Change the database and
+  Service Layer passwords afterwards (old copies may survive in backups and
+  sync folders), then delete it. While both files exist the server refuses the
+  plain-text one.
+- Plain text stays supported, with a warning in the logs and in
+  `connect_database` output.
+- Native Windows: encrypted credentials are not supported yet (no private Unix
+  socket); use the plain-text file there, or run under WSL.
+- Forgotten passphrase = recreate the profiles; there is no recovery.
+
+What it protects: copies of the file (stolen disk, backups, cloud sync,
+malware that copies files, the Windows side reading a WSL disk). What it does
+not: code running as your own OS user, which can replace the server or read its
+memory; a keylogger. Use a separate OS identity for that boundary.
+
 ## Security model
 
 **The server does not intentionally interpolate profile passwords into MCP tool

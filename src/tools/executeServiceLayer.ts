@@ -97,7 +97,11 @@ export function registerServiceLayerTool(
       connectionManager.reload();
       const sessionKey = slAdapter.getConnectionKey();
       if (connectionManager.listAll().some(p => slConnectionKey(p) === sessionKey)) return undefined;
-      const reason = 'the connected profile changed or is gone in the connections file since connect_database. Reconnect it to apply the current settings.';
+      // Locked/conflicting credentials cannot confirm the profile: deny, and say why.
+      const blocked = connectionManager.blockedReason();
+      const reason = blocked
+        ? `the connections file cannot be read to confirm the profile. ${blocked}`
+        : 'the connected profile changed or is gone in the connections file since connect_database. Reconnect it to apply the current settings.';
       logger.log(logger.createEntry({
         tool, database: targetDb, dbType: dbType(),
         operation, tables: [], query: `${method} ${url}`,

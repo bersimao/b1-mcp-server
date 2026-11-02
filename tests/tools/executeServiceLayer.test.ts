@@ -41,7 +41,12 @@ function capture(overrides: Partial<Config> = {}, clientName: string | null = 'c
     slAllowedMethods: ['GET', 'PATCH'], slWriteApproval: 'elicitation',
   };
   const profiles = [profile];
-  const connectionManager = { reload: vi.fn(), listAll: () => [...profiles] } as unknown as ConnectionManager;
+  const lockState = { blocked: undefined as string | undefined };
+  const connectionManager = {
+    reload: vi.fn(),
+    listAll: () => (lockState.blocked ? [] : [...profiles]),
+    blockedReason: () => lockState.blocked,
+  } as unknown as ConnectionManager;
   const sl = new ServiceLayerAdapter();
   Object.assign(sl, {
     dbName: 'SBO_TEST', slUrl: 'https://sap/b1s/v1', cookie: 'B1SESSION=x', initialised: true,
@@ -57,7 +62,7 @@ function capture(overrides: Partial<Config> = {}, clientName: string | null = 'c
   // Writes default to the connected database; a test overrides it to probe the check.
   const write: Handler = (args, extra) => handlers.execute_service_layer_write({ database: 'SBO_TEST', ...args }, extra);
   const unattended: Handler = (args, extra) => handlers.execute_service_layer_write_unattended({ database: 'SBO_TEST', ...args }, extra);
-  return { read, write, unattended, schemas, sl, execute, profile, profiles, connectionManager };
+  return { read, write, unattended, schemas, sl, execute, profile, profiles, connectionManager, lockState };
 }
 
 const accept = { sendRequest: vi.fn().mockResolvedValue({ action: 'accept', content: { approve: true } }) };
@@ -402,6 +407,17 @@ describe('write-time profile re-read', () => {
     const sendRequest = vi.fn();
     const result = await ctx.write({ method: 'PATCH', url: 'Items(1)', body: { Valid: 'tNO' } }, { sendRequest });
     expect(result.isError).toBe(true);
+    expect(sendRequest).not.toHaveBeenCalled();
+    expect(ctx.execute).not.toHaveBeenCalled();
+  });
+
+  it('fails closed with the lock reason when the credentials are locked', async () => {
+    const ctx = capture();
+    ctx.lockState.blocked = 'Credentials are encrypted and locked. Run in a terminal: b1-mcp creds unlock';
+    const sendRequest = vi.fn();
+    const result = await ctx.write({ method: 'PATCH', url: 'Items(1)', body: { Valid: 'tNO' } }, { sendRequest });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('creds unlock');
     expect(sendRequest).not.toHaveBeenCalled();
     expect(ctx.execute).not.toHaveBeenCalled();
   });

@@ -19,6 +19,7 @@ import { AuditLogger } from './logging/auditLogger.js';
 import { DbAdapter, DirectDbModule } from './db/adapter.js';
 import { ServiceLayerAdapter } from './sl/serviceLayerAdapter.js';
 import { ConnectionManager } from './config/connectionManager.js';
+import { UnlockListener } from './config/unlockSocket.js';
 import { RateLimiter } from './rateLimit/rateLimiter.js';
 import { registerSqlTool } from './tools/executeSql.js';
 import { registerSchemaTool } from './tools/schemaIntrospection.js';
@@ -42,6 +43,9 @@ export interface CreatedServer {
   slAdapter: ServiceLayerAdapter;
   /** Names passed to server.tool(), in registration order, for the startup log. */
   toolNames: string[];
+  /** Exposed so the entry point can zero the key and remove the unlock socket on exit. */
+  connectionManager: ConnectionManager;
+  unlockListener: UnlockListener;
 }
 
 /**
@@ -63,6 +67,16 @@ export async function createServer(
 
   // Load connection profiles
   const connectionManager = new ConnectionManager(config.connectionsFile || undefined);
+  // Encrypted credentials: open the unlock socket whenever the manager locks
+  // (at startup, or after the passphrase changes under a running server).
+  const unlockListener = new UnlockListener({
+    target: connectionManager,
+    onExhausted: () => { connectionManager.unlockDisabled = true; },
+  });
+  connectionManager.onLocked = () => {
+    unlockListener.ensure().catch((err: Error) =>
+      console.error(`[unlock] Could not open the unlock socket: ${err.message}`));
+  };
   connectionManager.load();
 
   const rateLimiter = new RateLimiter({
@@ -97,5 +111,5 @@ export async function createServer(
     `All tools registered. No database connected. ${profileCount} profile(s) available — use connect_database tool.`
   );
 
-  return { server, adapter, slAdapter, toolNames };
+  return { server, adapter, slAdapter, toolNames, connectionManager, unlockListener };
 }

@@ -23,17 +23,29 @@
 //
 // ============================================================================
 
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { createServer } from './server.js';
-import { DirectDb } from './db/directDb.js';
-import { createShutdown } from './shutdown.js';
+// Imports are dynamic so `b1-mcp creds …` never loads the server, the MCP SDK
+// or the native database drivers.
 
 // ---------------------------------------------------------------------------
 // Bootstrap
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  const { server, adapter, slAdapter, toolNames } = await createServer(new DirectDb());
+  if (process.argv[2] === 'creds') {
+    const { runCreds } = await import('./cli/creds.js');
+    process.exit(await runCreds(process.argv.slice(3)));
+  }
+
+  const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js');
+  const { createServer } = await import('./server.js');
+  const { DirectDb } = await import('./db/directDb.js');
+  const { createShutdown } = await import('./shutdown.js');
+  const { server, adapter, slAdapter, toolNames, connectionManager, unlockListener } = await createServer(new DirectDb());
+  // Runs on every exit path, process.exit included: remove the socket, zero the key.
+  process.once('exit', () => {
+    unlockListener.close();
+    connectionManager.lock();
+  });
   const transport = new StdioServerTransport();
 
   // Protocol.onclose, not transport.onclose: the SDK wraps the transport's
