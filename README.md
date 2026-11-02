@@ -67,13 +67,8 @@ own `fetch` and `https`. No HTTP framework, no axios, no PostgreSQL driver.
 
 The package ships with no `overrides` block, so `npx -y b1-mcp-server` installs
 the same tree a project install does (overrides never applied to npx, which runs
-without a root `package.json`). Known audit finding as of 1.6.0:
-[GHSA-xcx6-jx8p-x3h5](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5) in
-`@azure/msal-node`, pulled in by `mssql` → `tedious` → `@azure/identity`. It
-affects MSAL's auth-code flow, which is used only for Azure AD sign-in. This server
-connects to MS SQL with SQL logins (user/password) only. The latest
-`@azure/identity` still pins msal-node 6, so there is no fix within the allowed
-version ranges yet; the package will be bumped once one is released.
+without a root `package.json`). As of 1.6.0, `npm audit --omit=dev` reports 0
+vulnerabilities.
 
 ## Connection profiles
 

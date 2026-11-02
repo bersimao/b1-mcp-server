@@ -7,7 +7,7 @@
 //   or after build: node dist/scripts/test-connection.js <profile-id>
 // ============================================================================
 
-import { ConnectionManager } from '../src/config/connectionManager.js';
+import { loadProfiles } from './loadProfiles.js';
 import { DirectDb } from '../src/db/directDb.js';
 
 async function main() {
@@ -21,8 +21,7 @@ async function main() {
     process.exit(1);
   }
 
-  const manager = new ConnectionManager();
-  manager.load();
+  const manager = await loadProfiles();
   const profile = manager.find(profileId);
 
   if (!profile) {

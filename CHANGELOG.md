@@ -6,7 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [1.6.0] - 2026-10-26
+## [1.6.0] - 2026-11-02
+
+### Added
+- **Optional encrypted credentials.** Profiles can live in `connections.enc.json` (AES-256-GCM,
+  key derived from a passphrase with scrypt) instead of the plain-text file. The server starts
+  locked and takes the passphrase only from `b1-mcp creds unlock`, run in the user's own
+  terminal, over a private Unix socket; it keeps only the derived key in memory. New `creds`
+  subcommand (`init`, `migrate`, `list`, `add`, `edit`, `remove`, `passwd`, `unlock`), with
+  `npx b1-mcp-server creds …` for npx users. Secrets are read only from a TTY. Plain text keeps
+  working, with a warning; it is refused while an encrypted file exists. Not supported on native
+  Windows yet. See README, "Encrypted credentials".
+- `scripts/validate-directdb.ts` and `scripts/test-connection.ts` wait for `creds unlock` when
+  the profiles are encrypted.
 
 ### Changed
 - **Requires Node.js 22 or newer** (was 20). `mssql` 12 depends on `tedious` 20, which declares
@@ -14,15 +26,21 @@ All notable changes to this project are documented here. The format follows
   the old `>=20` declaration was inaccurate; Node 20 reached end of life in April 2026.
 - `mssql` 11 → 12 (`tedious` 18 → 20). No code change; the real-server driver harness passes
   on MS SQL (timeout shape and pool recovery unchanged) and HANA.
-- `zod` 3 → 4. The Service Layer write `body` schema now declares its string keys explicitly;
-  the JSON Schema sent to clients is unchanged in meaning.
+- `zod` 3 → 4. Two differences in the JSON Schema clients receive, compared with 1.5.2: the
+  tool argument objects no longer carry `"additionalProperties": false`, and the Service Layer
+  `body` declares `propertyNames: string`. Server-side validation is unchanged: unknown
+  arguments are still dropped.
+- `connect_database` reports locked, conflicting or unreadable credentials explicitly instead
+  of "no profiles found". A malformed connections file no longer echoes its content in the
+  error, which could include part of a password.
 
 ### Security
 - `zod` 4.6.7 clears the zod advisory affecting versions below 4.6.6.
-- Known, not yet fixable: [GHSA-xcx6-jx8p-x3h5](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5)
-  in `@azure/msal-node` (via `tedious` → `@azure/identity`). It affects MSAL's auth-code flow,
-  which only Azure AD sign-in uses; this server uses SQL logins only. Already present in 1.5.2;
-  waiting on an `@azure/identity` release that allows the patched msal-node 7.1.
+- [GHSA-xcx6-jx8p-x3h5](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5) (`@azure/msal-node`,
+  via `tedious` → `@azure/identity`, present in 1.5.2) and
+  [GHSA-rmxm-3fg6-px4f](https://github.com/advisories/GHSA-rmxm-3fg6-px4f)
+  (`@hono/node-server`, via the MCP SDK) are fixed by the lockfile: `@azure/identity` 4.14.1
+  allows msal-node 7.1.2, and `@hono/node-server` is 2.1.6. `npm audit --omit=dev` reports 0.
 
 ## [1.5.2] - 2026-10-26
 
