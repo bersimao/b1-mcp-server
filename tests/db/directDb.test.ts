@@ -23,7 +23,7 @@ const mocks = vi.hoisted(() => ({
 mocks.createConnection.mockReturnValue(mocks.hanaClient);
 mocks.mssqlRequest.input.mockReturnValue(mocks.mssqlRequest);
 mocks.mssqlPool.request.mockReturnValue(mocks.mssqlRequest);
-mocks.ConnectionPool.mockImplementation(() => mocks.mssqlPool);
+mocks.ConnectionPool.mockImplementation(function () { return mocks.mssqlPool; });
 
 vi.mock('@sap/hana-client', () => ({ default: { createConnection: mocks.createConnection } }));
 vi.mock('mssql', () => ({ default: { ConnectionPool: mocks.ConnectionPool } }));
@@ -70,7 +70,7 @@ afterEach(() => {
   mocks.mssqlRequest.input.mockReturnValue(mocks.mssqlRequest);
   mocks.mssqlRequest.query.mockResolvedValue({ recordset: [] });
   mocks.mssqlPool.request.mockReturnValue(mocks.mssqlRequest);
-  mocks.ConnectionPool.mockImplementation(() => mocks.mssqlPool);
+  mocks.ConnectionPool.mockImplementation(function () { return mocks.mssqlPool; });
   mocks.hanaClient.exec.mockImplementation((_s, _p, cb) => cb(null, []));
 });
 
