@@ -214,7 +214,32 @@ the exact unlock command for its own install.
 What it protects: copies of the file (stolen disk, backups, cloud sync,
 malware that copies files, the Windows side reading a WSL disk). What it does
 not: code running as your own OS user, which can replace the server or read its
-memory; a keylogger. Use a separate OS identity for that boundary.
+memory; a keylogger. An AI agent with shell access runs as your OS user, so
+encryption alone does not keep the credentials from it. With `npx` this holds
+in full: the package is unpacked into your npm cache, which your user (and the
+agent) can modify.
+
+### Separate OS user (strong boundary, manual setup)
+
+The boundary against same-user code is a dedicated OS user that owns the
+credentials. It cannot be set up through `npx`; on Linux, roughly:
+
+- Create a system user (e.g. `b1mcp`) with a private home. The connection
+  files, audit log, trust store and unlock socket follow that user's home.
+- Install the package root-owned (e.g. `/opt/b1-mcp`, `npm ci --omit=dev` as
+  root) and run it with a root-owned `node`, never one under your home (nvm).
+- Allow exactly that command with a `sudoers` rule (`NOPASSWD`, no extra
+  arguments, no `SETENV`, environment reset), and set the MCP command to
+  `sudo -n -u b1mcp <that command>`. Run `creds` through `sudo -u b1mcp` with
+  your password, so only a human can add profiles or unlock.
+
+This only holds if your user cannot become root without a password. Check for
+passwordless `sudo`, membership in the `docker` group, and on **WSL** the
+Windows interop: from inside the distro, `wsl.exe -u root` gives root with no
+password, so a separate Linux user is not a boundary while interop is enabled
+(`[interop] enabled=false` in `/etc/wsl.conf` disables it, and with it every
+Windows `.exe` call from Linux). Where that is not acceptable, rely on the
+encryption above and run the server on a host the agent cannot reach.
 
 ## Security model
 

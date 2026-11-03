@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Docs: README "Separate OS user" and SECURITY state that encryption is not a boundary against
+  same-user code (npx included), and that a separate OS user needs a root-owned install and no
+  passwordless path to root; on WSL, interop (`wsl.exe -u root`) breaks it.
+- Dev: vitest 3 → 4 (closes the dev-only tinypool advisories).
+
 ## [1.6.0] - 2026-11-02
 
 ### Added
