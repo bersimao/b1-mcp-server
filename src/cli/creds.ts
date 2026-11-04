@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { homedir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { randomBytes } from 'crypto';
-import { checkOwnerOnly, parseJsonQuiet, parseProfiles } from '../config/connectionManager.js';
+import { byId, checkOwnerOnly, parseJsonQuiet, parseProfiles } from '../config/connectionManager.js';
 import {
   deriveKeySync, encryptedPathFor, newKdfParams, open, parseEnvelope, seal, type KdfParams,
 } from '../config/vault.js';
@@ -319,7 +319,7 @@ export async function runCreds(args: string[], deps: CredsDeps = {}): Promise<nu
         const v = await openVault(encPath, io);
         v.key.fill(0);
         if (v.profiles.length === 0) io.out('(no profiles)');
-        for (const p of v.profiles) {
+        for (const p of [...v.profiles].sort(byId)) {
           const sides = [p.dbServer ? 'DB' : '', p.slUrl ? 'SL' : ''].filter(Boolean).join('+') || 'none';
           io.out(`${p.id} -> ${p.dbName} (${p.dbType}) [${sides}]`);
         }

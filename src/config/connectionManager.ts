@@ -449,7 +449,7 @@ export class ConnectionManager {
    */
   listAll(): ConnectionProfile[] {
     if (!this.loaded) this.load();
-    return [...this.profiles];
+    return [...this.profiles].sort(byId);
   }
 
   /**
@@ -467,4 +467,9 @@ export class ConnectionManager {
   getEncryptedFilePath(): string {
     return this.encFilePath;
   }
+}
+
+/** Display order for profile listings: case-insensitive by id. */
+export function byId(a: { id?: unknown }, b: { id?: unknown }): number {
+  return String(a.id).localeCompare(String(b.id), undefined, { sensitivity: 'base' });
 }

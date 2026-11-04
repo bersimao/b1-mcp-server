@@ -162,7 +162,7 @@ describe('ConnectionManager.find', () => {
       { id: 'good_after', dbType: 'mssql', dbName: 'SBO_AFTER' },
     ]);
 
-    expect(manager.listAll().map(p => p.id)).toEqual(['good_before', 'good_after']);
+    expect(manager.listAll().map(p => p.id)).toEqual(['good_after', 'good_before']);
     expect(manager.find('broken')).toBeUndefined();
     expect(manager.find('good_after')?.dbName).toBe('SBO_AFTER');
   });

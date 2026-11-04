@@ -88,6 +88,13 @@ describe('creds CLI', () => {
     await m.unlock(PASS);
     expect(m.find('qa')?.dbPassword).toBe('secret2');
 
+    // list sorts by id (case-insensitive), not file order
+    expect((await run(p, ['add'], [PASS, 'Beta', 'mssql', 'sql:1433', 'SBO_B', 'sa', 'x', '', '', '', '', '', ''])).code).toBe(0);
+    expect((await run(p, ['add'], [PASS, 'alpha', 'mssql', 'sql:1433', 'SBO_A', 'sa', 'x', '', '', '', '', '', ''])).code).toBe(0);
+    expect((await run(p, ['list'], [PASS])).out.map(l => l.split(' ')[0])).toEqual(['alpha', 'Beta', 'qa']);
+    expect((await run(p, ['remove', 'alpha'], [PASS, 'y'])).code).toBe(0);
+    expect((await run(p, ['remove', 'Beta'], [PASS, 'y'])).code).toBe(0);
+
     expect((await run(p, ['remove', 'qa'], [PASS, 'y'])).code).toBe(0);
     expect((await run(p, ['list'], [PASS])).out).toEqual(['(no profiles)']);
   });
