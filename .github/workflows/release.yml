@@ -1,0 +1,39 @@
+name: release
+
+# Every pushed v* tag gets a GitHub Release whose notes are that version's CHANGELOG section.
+# Fails if the tag, package.json and CHANGELOG disagree, so drift shows up as a red run.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches package.json
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          [ "$v" = "$pkg" ] || { echo "::error::tag $GITHUB_REF_NAME but package.json is $pkg"; exit 1; }
+
+      - name: Extract CHANGELOG section
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v h="## [$v]" 'index($0,h)==1{f=1;next} f&&/^## \[/{exit} f' CHANGELOG.md > notes.md
+          grep -q '[^[:space:]]' notes.md || { echo "::error::no '## [$v]' section in CHANGELOG.md"; exit 1; }
+          printf '\nnpm: [`b1-mcp-server@%s`](https://www.npmjs.com/package/b1-mcp-server/v/%s)\n' "$v" "$v" >> notes.md
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file notes.md --latest
+          fi
