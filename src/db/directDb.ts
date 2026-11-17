@@ -2,8 +2,8 @@
 // DirectDb — the database driver.
 //
 // Implements the DirectDbModule contract (init / executeQuery / close) directly
-// against @sap/hana-client and mssql. It replaced the sps-sap-interface
-// dependency, which shipped an Express server, an axios Service Layer, a
+// against @sap/hana-client and mssql. It replaced an earlier third-party
+// dependency that shipped an Express server, an axios Service Layer, a
 // PostgreSQL driver and a stub `https` package for these three method calls.
 //
 // The behaviour was ported deliberately rather than redesigned: the timeout

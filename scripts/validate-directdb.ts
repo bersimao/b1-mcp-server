@@ -54,7 +54,7 @@ function checksFor(isHana: boolean): Check[] {
         params: ['first', 'second'], shape: firstRow,
       },
       {
-        // The regression case: sps-sap-interface rewrote the ? inside the literal.
+        // The regression case: the earlier driver wrapper rewrote the ? inside the literal.
         name: 'param beside a literal ?',
         query: 'SELECT ? AS "A", \'lit?eral\' AS "B" FROM DUMMY',
         params: ['bound'], shape: firstRow, expect: '{"A":"bound","B":"lit?eral"}',
