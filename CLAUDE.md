@@ -1,18 +1,14 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code when working on this repository. End-user docs (install, profile shape, security posture) are in [README.md](README.md); [AGENTS.md](AGENTS.md) is the review checklist.
 
 ## Project
 
-`b1-mcp-server` is a Model Context Protocol server that gives an AI client guarded access to SAP Business One via both `DirectDb` (HANA / MS SQL) and the Service Layer OData API. Both sides are local: `src/db/directDb.ts` on `@sap/hana-client` + `mssql`, and a verified-TLS `fetch` adapter for the Service Layer.
+`b1-mcp-server` is a Model Context Protocol server that gives an AI client guarded access to SAP Business One via `DirectDb` (HANA / MS SQL, [src/db/directDb.ts](src/db/directDb.ts)) and the Service Layer OData API (verified-TLS `fetch` adapter).
 
-**Read-only SQL posture:** DirectDb executes only `SELECT` (and anonymous blocks whose statements are all reads); every `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` is blocked. Service Layer allows the verbs in each profile's `slAllowedMethods` (default `GET` only; `PATCH` / `POST` / `DELETE` opt-in; never `PUT`). Every write goes through its own tool and, by default, requires explicit user acceptance through MCP form elicitation; clients without elicitation support fail closed. A profile with `slWriteApproval: "client"` relies on Claude Code's permission prompt instead (only when the client reports itself as `claude-code`); `"none"` does the same and also unlocks `execute_service_layer_write_unattended`, which writes with no approval (development companies only). SQL writes remain the human's job.
+**Read-only SQL posture:** DirectDb executes only `SELECT` (and anonymous blocks whose statements are all reads); every `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` is blocked. Service Layer allows the verbs in each profile's `slAllowedMethods` (default `GET` only; `PATCH` / `POST` / `DELETE` opt-in; never `PUT`). Every write goes through its own tool and requires explicit user acceptance through MCP form elicitation; clients without elicitation fail closed. `slWriteApproval: "client"` relies on Claude Code's permission prompt instead (only when the client reports itself as `claude-code`); `"none"` also unlocks `execute_service_layer_write_unattended` (development companies only). SQL writes remain the human's job.
 
-The server starts **without** any database or Service Layer connection. The AI must call `connect_database` to load a profile from `~/.claude/connections.json` and connect whichever side(s) that profile configures. There is no env-var fallback — credentials live exclusively in that file, or in its encrypted sibling `connections.enc.json`.
-
-**Encrypted credentials** ([src/config/vault.ts](src/config/vault.ts), [src/config/unlockSocket.ts](src/config/unlockSocket.ts), [src/cli/creds.ts](src/cli/creds.ts)): AES-256-GCM + scrypt. `ConnectionManager` exposes an explicit state (`none` / `plain` / `locked` / `unlocked` / `conflict` / `error`); callers must surface `blockedReason()` instead of reporting "no profiles". The salt stays fixed across CLI edits so a running server's in-memory key keeps decrypting on `reload()`; only `creds passwd` changes it, which re-locks running servers and reopens their unlock socket (`onLocked`). `index.ts` dispatches `creds` with dynamic imports so the CLI never loads the drivers. Tests never touch the real `~/.claude` files: point `MCP_CONNECTIONS_FILE` / the `plainPath` dep at a temp dir. The end-to-end `creds` flow needs a real TTY, so the user runs it by hand.
-
-End-user docs (install, connection profile shape, security posture) are in [README.md](README.md). This file is for working *on* the codebase.
+The server starts **without** any connection. The AI must call `connect_database` to load a profile from `~/.claude/connections.json` (or its encrypted sibling `connections.enc.json`). No env-var fallback for credentials. `ConnectionManager` exposes an explicit state (`none` / `plain` / `locked` / `unlocked` / `conflict` / `error`); callers must surface `blockedReason()`, never report "no profiles". Tests never touch the real `~/.claude` files: point `MCP_CONNECTIONS_FILE` / the `plainPath` dep at a temp dir. The `creds` CLI flow needs a real TTY, so the user runs it by hand.
 
 ## Code rules
 
@@ -22,7 +18,7 @@ Public TypeScript project (Node ESM, `vitest`). Load the `b1-mcp` skill before t
 1. `npm test` green and `npx tsc --noEmit` clean.
 2. `npm audit --omit=dev` → 0 vulnerabilities (the tarball is what `npx` installs).
 3. Any change under `src/guardrails/` keeps `tests/guardrails/quotedSpanEvasion.test.ts` green and adds a regression payload for the case it fixes.
-4. Any bump of `@sap/hana-client` / `mssql` / `generic-pool` → `npx tsx scripts/validate-directdb.ts <profile> --timeouts` against one HANA and one MS SQL profile, then update the "Last run" note in the DirectDb section below. Unit tests mock the drivers and cannot catch driver breakage.
+4. Any bump of `@sap/hana-client` / `mssql` / `generic-pool` → `npx tsx scripts/validate-directdb.ts <profile> --timeouts` against one HANA and one MS SQL profile, then update the "Last run" note (project memory `topics/architecture-directdb.md`). Unit tests mock the drivers and cannot catch driver breakage.
 5. Nothing to stdout except JSON-RPC; logs go to stderr. Never log passwords, cookies or raw `connections.json`.
 
 No house lint for this repo — do not invent one. Client names stay out of the public repo.
@@ -30,165 +26,28 @@ No house lint for this repo — do not invent one. Client names stay out of the 
 ## Commands
 
 ```bash
-npm install                        # one-time
-npm run build                      # tsc — prebuild wipes dist/ for a clean output
-npm run watch                      # tsc --watch
-npm run dev                        # tsx src/index.ts (skips build)
-npm test                           # vitest run — full suite
-npm run test:watch                 # vitest in watch mode
-
-# Single file
-npx vitest run tests/guardrails/parser.test.ts
-
-# By name pattern
-npx vitest run -t "blocks DROP on SAP_CORE"
+npm run build      # tsc, prebuild wipes dist/
+npm run dev        # tsx src/index.ts
+npm test           # vitest run
+npx vitest run tests/guardrails/parser.test.ts   # single file; add -t "<name>" for a pattern
+npx tsx scripts/validate-directdb.ts <profile-id> [--timeouts]   # real-server driver harness
+npm pack --dry-run # tarball must ship only dist/, LICENSE, README.md, SECURITY.md, package.json
 ```
-
-Standalone DirectDb sanity check against a connection profile (no MCP server, just the underlying adapter):
-
-```bash
-npx tsx scripts/test-connection.ts <profile-id>
-```
-
-Driver regression harness against a real server — run this after any `@sap/hana-client` / `mssql` / `generic-pool` bump, since the unit tests mock the drivers:
-
-```bash
-npx tsx scripts/validate-directdb.ts <profile-id> [--timeouts]
-```
-
-Pre-publish dry run (verifies the tarball ships only `dist/`, `LICENSE`, `README.md`, `SECURITY.md`, `package.json`):
-
-```bash
-npm pack --dry-run
-```
-
-## Architecture
-
-### Connection model
-
-`DirectDb` ([src/db/directDb.ts](src/db/directDb.ts)) is instantiated once in [src/index.ts](src/index.ts) and handed to `createServer`. Thin wrappers:
-
-- [src/db/adapter.ts](src/db/adapter.ts) — `DbAdapter`
-- [src/sl/serviceLayerAdapter.ts](src/sl/serviceLayerAdapter.ts) — strict-by-default TLS `ServiceLayerAdapter` with explicit per-profile certificate pinning compatibility; retains only the session cookie
-
-`DbAdapter` tracks `dbName`, `dbType` and its connection key;
-`ServiceLayerAdapter` tracks `dbName`, the Service Layer root, TLS/session state
-and its connection key. The Service Layer adapter discards its configured
-username/password after login. DirectDb's live driver/pool may retain connection
-material needed to maintain or recreate database sessions, but `DbAdapter`
-exposes no credential accessors.
-
-[src/tools/connectDatabase.ts](src/tools/connectDatabase.ts) implements the safe dual-connection switch:
-
-- `OperationCoordinator` serializes every operation and environment switch.
-- Teardown is **per side**: each side carries a connection key (a hash of the profile fields that side uses), and any side whose key no longer matches the incoming profile is disconnected first — whether or not the new profile still configures it. Deleting the SL fields from a profile therefore really does end the session, and rotating one side's credentials no longer bounces the other. The invariant that DirectDb and Service Layer never point at different environments survives because a still-connected side either already matched the profile or is reconnected to it.
-- Partial success is allowed: if SL fails on the new target, DB stays active (and vice versa). Retrying the same profile reconnects only the failed side. Profiles reload on every connection call, so adding SL fields to an already-active DB-only profile initializes only SL.
-- Failed login attempts are tracked per profile/side; a warning is appended after `LOCKOUT_WARNING_THRESHOLD = 3` because repeated failures may trigger lockout under the database server's, SAP B1 company's, or authentication service's configured login policy.
-- Shutdown ([src/shutdown.ts](src/shutdown.ts)): transport close, stdin EOF, `SIGTERM` and `SIGINT` all route through one idempotent function that disconnects both sides (Service Layer `Logout` included) within 5 s, then exits. The SDK's stdio transport never exits on its own. Measured before this existed: with an MS SQL pool open, closing stdin left an orphan process running until killed; with HANA the process exited by itself. In both cases the Service Layer session was never logged out.
-
-Profile matching (`ConnectionManager.find` in [src/config/connectionManager.ts](src/config/connectionManager.ts)): exact `id` → exact `dbName` → **unique** partial substring match. Ambiguous partials (multiple profiles share the substring) return `undefined` and the tool surfaces the candidate list instead of guessing.
-
-### DirectDb ([src/db/directDb.ts](src/db/directDb.ts))
-
-The database driver, built directly on `@sap/hana-client` + `mssql` + `generic-pool`. It replaced the `sps-sap-interface` dependency, which brought an Express server, an axios Service Layer, a PostgreSQL driver, `system-sleep` and `https@1.0.0` — an npm **stub package**, not Node's built-in — for three method calls, and forced a hand-maintained `overrides` block on every consumer. A clean tarball install now audits at 0 vulnerabilities with no overrides, which `npx` could never achieve before.
-
-**Behaviour that matters:**
-
-- `executeQuery(query, params?)` — `{db}` is the schema placeholder resolved at runtime; `?` is the parameter placeholder. This read-only server only ever issues `SELECT`, so `?` binding always applies. On MS SQL each `?` is rewritten to `@mssqlboundparmN` before the statement reaches `mssql` — quote- and comment-aware, so a `?` inside a literal (`WHERE Comments = 'why?'`) or comment stays untouched. A placeholder/value count mismatch throws instead of binding wrong.
-- `init({ …, timeout })` — one value, two meanings: HANA `communicationTimeout`, MS SQL `connectionTimeout` **and** `requestTimeout`. Default 600 000 ms; `connect_database` overrides it with `config.queryTimeoutMs` (`MCP_QUERY_TIMEOUT_MS`, default 60 s). This is the only cost ceiling in the server — the row cap runs after the DB has already done the work. Both engines were measured killing the statement server-side (`SYS.M_ACTIVE_STATEMENTS` / `sys.dm_exec_requests`), and both pools survive repeated timeouts (12 poisons → 25/25 clean). They differ in how the abort *looks*: MS SQL cancels the request and reports `Timeout: Request failed to complete in Nms`, but **HANA drops the socket**, so a timed-out query surfaces as `Connection down: [89012] Socket recv timeout` with no mention of a timeout at all — don't chase that as a network fault. `hana-client` reconnects transparently, so the next query just works.
-- HANA connects through the **callback** overload of `client.connect`. The synchronous overload blocked the event loop for the whole handshake and login. Initialization now authenticates exactly once before exposing a single-session pool, so one bad password means one rejected login rather than five eager attempts. Pool acquisition is bounded by the configured query timeout.
-- The HANA pool releases the connection **on the error path too**. That is what lets it survive a poisoned query instead of leaking a slot per timeout.
-- **`encrypt: false` is pinned explicitly for MS SQL.** `mssql@6` defaulted to no encryption and every on-prem SAP B1 profile was configured against that; `mssql@11` flips the default to `true`. Pinning it stops a driver bump from silently breaking every profile. Turning it on properly needs a per-profile opt-in and a certificate story, like the Service Layer adapter has.
-
-**Re-validate after any driver bump.** [scripts/validate-directdb.ts](scripts/validate-directdb.ts) runs the read-only checks plus the timeout / pool-poisoning behaviour against a real server (`npx tsx scripts/validate-directdb.ts <profile-id> [--timeouts]`; `--timeouts` is opt-in because it holds a session open until the server kills the statement). Mocked unit tests cannot catch driver breakage — all three drivers are CommonJS, so `import { ConnectionPool } from 'mssql'` typechecks and then throws at runtime, and a green unit suite says nothing about it. Last run on `mssql@12.7.13` (tedious 20.3.8) / `@sap/hana-client@2.30.24` / `generic-pool@3.9.0` (2026-10-26): all checks passed against a real MS SQL server with `--timeouts` (timeout shape and pool recovery unchanged from the values documented above) and against a real HANA server without `--timeouts` (HANA driver unchanged). HANA re-run with `--timeouts` on 2026-11-02 (encrypted profiles, unlocked via `creds unlock`): all checks passed, timeout shape and pool recovery unchanged (4 poisons → 10/10 clean). Shutdown with a live MS SQL pool: stdin EOF → exit 0 in 100 ms.
-
-### Service Layer
-
-Uses native `fetch` for strict TLS and a pinned native HTTPS transport for approved legacy endpoints. Both `/b1s/v1` (OData v3) and `/b1s/v2` (OData v4) profile roots are preserved exactly; the security policy validates only version-neutral relative endpoints. SAP deprecated OData v3 starting with SAP Business One 10.0 FP 2405 and made OData v4 primary, so new compatible profiles should prefer `/b1s/v2`. Invalid certificates are inspected without credentials and require MCP form elicitation before their exact fingerprint is saved in the local owner-only trust store. Changed certificates require approval again. Redirects are disabled, requests have fixed timeouts and bounded responses, and pins are checked before login credentials can be transmitted. A 401 requires reconnecting the profile; credentials are not retained for automatic login.
-
-### MCP tools
-
-Every tool is registered in [src/server.ts](src/server.ts) and shares the same adapters / logger / rate limiter.
-
-| Tool | File | Purpose |
-|---|---|---|
-| `connect_database` | [tools/connectDatabase.ts](src/tools/connectDatabase.ts) | Connect the DB and/or SL sides configured by a profile; `"list"` to enumerate profiles |
-| `execute_sql` | [tools/executeSql.ts](src/tools/executeSql.ts) | Runs SQL (user- or AI-written) — **read-only**: only SELECT and read-only anonymous blocks pass `validateAnySql()` |
-| `execute_service_layer` | [tools/executeServiceLayer.ts](src/tools/executeServiceLayer.ts) | OData GET, if the profile's `slAllowedMethods` lists it |
-| `execute_service_layer_write` | [tools/executeServiceLayer.ts](src/tools/executeServiceLayer.ts) | PATCH / POST / DELETE from `slAllowedMethods`; requires the target `database`; approved by elicitation or, with `slWriteApproval: "client"`, Claude Code's permission prompt; PUT never. A separate tool because client permission rules match tool names, not arguments |
-| `execute_service_layer_write_unattended` | [tools/executeServiceLayer.ts](src/tools/executeServiceLayer.ts) | The same writes with no approval; refused unless the connected profile has `slWriteApproval: "none"` (rule `slWriteUnattendedNotAllowed`). Its own name so a client can `allow` it while the normal write tool stays under `ask` |
-| `get_schema_info` | [tools/schemaIntrospection.ts](src/tools/schemaIntrospection.ts) | Read-only metadata, HANA + MSSQL catalog syntax. Fixed catalog SELECTs; the `filter` is bound as `?`, never interpolated — this is the only SQL path that skips the guardrail engine, so the bind is the whole defence |
-| `check_connection` | [tools/checkConnection.ts](src/tools/checkConnection.ts) | Independent health pings for DB and SL |
-
-`execute_sql` handles SQL regardless of origin — user-written or AI-generated queries all go through the same `validateAnySql()` pipeline, which on this read-only server permits only SELECT (and anonymous blocks whose statements are all reads).
-
-### Guardrail engine
-
-[src/guardrails/](src/guardrails/) is the security core. The `execute_sql` tool calls `validateAnySql()` from [guardrails/index.ts](src/guardrails/index.ts), which:
-
-1. [parser.ts](src/guardrails/parser.ts) — tokenises and classifies operation type, table list, SET columns. For `DO BEGIN..END` (HANA) and `BEGIN..END` (MSSQL) anonymous blocks it classifies the block by the **most dangerous statement inside it**: any write/exec/DDL keyword (`INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/CALL/EXEC/TRUNCATE/MERGE/UPSERT/REPLACE/IMPORT/EXPORT/WRITETEXT/UPDATETEXT/GRANT/REVOKE/RENAME/…`) makes the whole block that operation, so a block can never be disguised as a read by appending a trailing `SELECT`. Keyword scanning blanks out quoted spans so a keyword inside a string/identifier doesn't false-trigger. Semicolons inside a block are allowed; bare multi-statement queries are not.
-
-   **Quoting is load-bearing.** `stripComments()` copies `'...'`, `"..."` and `[...]` spans verbatim (including `''`/`""`/`]]` escapes): a `--` or `/*` inside an identifier is data, not a comment. Stripping it used to delete the rest of the statement from the guardrail's view while the DB still executed it in full — `SELECT 1 AS [x--]; DROP TABLE OITM` collapsed to `SELECT 1 AS [x` and was allowed. The audit logger receives the original raw SQL and still recorded the complete input; the defect was guardrail bypass, not audit truncation. Regression payloads live in [tests/guardrails/quotedSpanEvasion.test.ts](tests/guardrails/quotedSpanEvasion.test.ts). Any change to the comment/quote scanners must keep that suite green.
-2. [tableClassifier.ts](src/guardrails/tableClassifier.ts) — name-based classification:
-   - **SAP_CORE** (≤4 chars, e.g. `ORDR`, `OITM`, `INV1`): most restrictive
-   - **SAP_USER** (`@`-prefixed UDTs, e.g. `@MY_UDT`)
-   - **CUSTOM** (>4 chars, no `@`)
-   - **TEMP** (`#` / `##` prefixed)
-3. Malformed-quoting deny (`malformedSql`) — both gates reject SQL with an unterminated `'`, `"` or `[` span (checked on comment-stripped text, so an apostrophe inside a comment is fine). An unclosed span blinds every scanner from that point to the end of the statement, so a write keyword after it would never be seen.
-4. Read-only enforcement — `validateAnySql()` permits only `SELECT`; `INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/EXEC` and unrecognised operations are all denied. Five SELECT-shaped hazards are blocked explicitly in [rules/selectRule.ts](src/guardrails/rules/selectRule.ts): sequence advancement (`NEXTVAL` / `NEXT VALUE FOR`); `SELECT ... INTO <table>` (MS SQL table creation); pass-through functions (`OPENQUERY/OPENROWSET/OPENDATASOURCE`); a **write-keyword fail-safe**; and high-impact lock hints (`UPDLOCK/XLOCK/TABLOCK/TABLOCKX/HOLDLOCK/SERIALIZABLE/REPEATABLEREAD`). The fail-safe denies anything classified as a read that still contains a bare write/DDL/exec keyword (`INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/TRUNCATE/MERGE/UPSERT/GRANT/REVOKE/RENAME/EXEC/EXECUTE/CALL/WRITETEXT/UPDATETEXT`), closing statement chaining that carries no semicolon and backstopping any gap in the block keyword scan. `REPLACE` is excluded there because it is a common string function; its upsert spelling has no read classification and is denied upstream. Other locking/isolation hints remain allowed for compatibility but are not lock-free: `NOLOCK` / `READUNCOMMITTED` still take schema-stability locks, `READCOMMITTEDLOCK` requests shared locking, `READPAST` does not skip page locks, and `ROWLOCK` / `PAGLOCK` select granularity. HANA's `SELECT ... FOR UPDATE` needs no entry because the bare `UPDATE` already trips the fail-safe. These scans run on comment-stripped, quote-blanked SQL so an inline comment (`OPENQUERY/**/(...)`) or a keyword hidden in a string/identifier cannot evade them.
-
-5. Result caps — [tools/formatResult.ts](src/tools/formatResult.ts) is the single renderer for `execute_sql`, `get_schema_info` and `execute_service_layer` GET. It slices to `MCP_MAX_RESULT_ROWS` (default 500), then cuts the rendered JSON at `MCP_MAX_RESULT_CHARS` (default 100 000). The guardrails decide whether a query *may* run, never how much it returns — `SELECT * FROM OUSR` is a legal read. The Service Layer path caps twice on purpose: the adapter bounds the *raw* response at `maxResponseChars`, but pretty-printing inflates it well past that, so the cap is reapplied to what actually reaches the model. Truncation is always announced in a leading `[TRUNCATED: …]` note: a silently partial result set is worse than none, because the model would reason over it as complete.
-
-The per-operation rules under [guardrails/rules/](src/guardrails/rules/) (INSERT/UPDATE/DELETE/DROP) still exist and encode the classification model below, but on the live read-only server they are reachable only through the internal `validate()` helper used by the unit tests — the live tool path stops at SELECT.
-
-Classification model (the rules under `guardrails/rules/`, exercised by tests — **not** the live gate, which is read-only):
-
-| Op | SAP_CORE | SAP_USER | CUSTOM | TEMP |
-|---|---|---|---|---|
-| SELECT | allow | allow | allow | allow |
-| INSERT | block | confirm | allow | allow |
-| UPDATE | only `U_*` cols | allow | allow | allow |
-| DELETE | block | confirm | allow | allow |
-| DROP | block | block | only inside `BEGIN..END` | only inside `BEGIN..END` |
-
-Always blocked in raw SQL regardless: `EXEC` / `EXECUTE` / `CALL`, `CREATE` / `ALTER`, sequence advancement, high-impact SQL Server lock hints, and multi-statement queries (semicolons outside blocks).
-
-### Audit log
-
-[src/logging/auditLogger.ts](src/logging/auditLogger.ts) writes JSON Lines to a file (default: `~/.claude/logs/b1-mcp-audit.jsonl`, set via `MCP_AUDIT_LOG_PATH`) and emits a concise human-readable summary to stderr at `debug`/`info` level. Allowed SQL/Service Layer intent and policy denials are recorded before execution, and successful/failed SQL or Service Layer execution writes a completion record with duration or error details. Connection attempts, schema reads and health checks are also audited; rate-limit rejections, profile listing and early "not connected" responses are not. The MCP stdio transport uses stdout for JSON-RPC, so logs must never go to stdout.
 
 ## Layout
 
-```
-src/
-  index.ts            entry, constructs DirectDb, bootstraps
-  server.ts           factory: registers all tools, shares adapters
-  config/             settings, connection-profile loader, vault (encryption), unlock socket
-  cli/                `b1-mcp creds …` (encrypted credentials CLI)
-  db/                 directDb.ts (the driver) + adapter.ts (wrapper)
-  sl/                 strict-TLS Service Layer adapter
-  types/drivers.d.ts  minimal ambient types for the three CJS drivers
-  tools/              one file per MCP tool
-  guardrails/         parser, table classifier, per-op rules (index.ts = read-only gate)
-  sanitisation/       input validator (length / null-byte pre-checks)
-  rateLimit/          sliding-window per-tool rate limiter
-  logging/            JSON Lines audit logger
-tests/                mirrors src/ — vitest, every guardrail rule covered
-scripts/
-  test-connection.ts     standalone DirectDb sanity check (takes profile id)
-  validate-directdb.ts   real-server driver regression harness
-```
+`src/`: `index.ts` (entry), `server.ts` (registers tools), `config/` (profiles, vault, unlock socket), `cli/` (`creds`), `db/` (DirectDb + adapter), `sl/` (strict-TLS adapter), `tools/` (one file per MCP tool), `guardrails/` (parser, table classifier, rules; `index.ts` = read-only gate), `sanitisation/`, `rateLimit/`, `logging/` (JSON Lines audit). `tests/` mirrors `src/`.
 
 ## Design principles
 
 1. **Deny by default.** Unrecognised operations are rejected.
-2. **Audit guarded intent and policy decisions.** SQL and Service Layer intent and denials are logged before execution where supported; completion, connection and health events are recorded at their actual stage. Rate-limit rejections, profile listing and early "not connected" responses are documented exceptions.
+2. **Audit guarded intent and policy decisions** before execution; completion, connection and health events at their actual stage.
 3. **Never rewrite suspicious queries.** Accept as-is or reject; no silent normalisation.
-4. **Server is the authority on SQL safety.** The live SQL path is read-only: `validateAnySql()` executes only `SELECT`. Anonymous `DO BEGIN..END` / `BEGIN..END` blocks are classified by their most dangerous inner statement, so a write/exec hidden behind a trailing `SELECT` is still blocked — trust does not depend on the AI pre-validating.
-5. **HANA vs MSSQL syntax differs** throughout (e.g. `CALL` vs `EXEC`, `DO BEGIN` vs `BEGIN`, schema-introspection queries). When adding features, handle both.
-6. **`{db}` placeholder** is available when a query needs explicit active-profile schema qualification. Fixed schema-introspection and health-check queries instead use `CURRENT_SCHEMA`, `DB_NAME()` or engine-specific built-ins.
-7. **Do not deliberately expose profile passwords through MCP.** Profile listings expose only `id`, `dbName`, `dbType`, capability flags and an optional active marker. The Service Layer adapter discards its configured username/password after login; DirectDb's driver/pool may retain connection material required for its session lifecycle, but exposes no credential accessor through `DbAdapter`. Server-owned formatting does not interpolate passwords, while upstream database-driver and Service Layer errors are returned and audited verbatim, so the system is not a general secret-redaction boundary. This also does not prevent a same-user AI shell/filesystem tool from opening `connections.json`; deployment documentation requires managed hooks/sandboxing and identifies separate OS identity as the strong boundary.
+4. **Server is the authority on SQL safety.** The live SQL path is read-only: `validateAnySql()` executes only `SELECT`; anonymous blocks are classified by their most dangerous inner statement.
+5. **HANA vs MSSQL syntax differs** (`CALL` vs `EXEC`, `DO BEGIN` vs `BEGIN`, introspection queries). Handle both.
+6. **`{db}` placeholder** is for explicit active-profile schema qualification; fixed introspection and health queries use `CURRENT_SCHEMA`, `DB_NAME()` or built-ins.
+7. **Do not expose profile passwords through MCP.** Profile listings expose only `id`, `dbName`, `dbType`, capability flags and an active marker. The Service Layer adapter discards credentials after login; `DbAdapter` has no credential accessor. Driver and Service Layer errors are returned and audited verbatim, so the server is not a secret-redaction boundary.
 
-## Tech stack
+## Deeper reference (loaded on demand)
 
-Node ≥22, TypeScript ES2022 with Node16 modules. Dependencies: `@modelcontextprotocol/sdk` (stdio transport), `zod` (tool schema validation), `@sap/hana-client` + `mssql` + `generic-pool` (DirectDb). Tests via `vitest`.
+Project memory `topics/`: `architecture-connection.md` (connection switch, teardown, shutdown, profile matching), `architecture-directdb.md` (driver behaviour, timeouts, `encrypt: false` pin, "Last run"), `architecture-service-layer-tools.md` (Service Layer, tools table), `guardrail-engine.md` (parser, quoting, SELECT hazards, result caps), `audit-log-layout-stack.md` (audit log, full tree, stack), `credenciais-criptografia.md` (vault).
