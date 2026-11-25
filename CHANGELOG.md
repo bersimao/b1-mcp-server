@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-11-25
+
+### Security
+- **SQL gate: admin and session statements chained onto a read are now blocked** (GitHub issue
+  #1). The read fail-safe denied only write/DDL/exec keywords, so a semicolon-less statement such
+  as `SELECT 1 SHUTDOWN WITH NOWAIT`, `KILL`, `DBCC`, `RECONFIGURE`, `BACKUP`, `WAITFOR`, `USE` or
+  `SET <option>` passed `execute_sql`, and MS SQL ran both statements. Two closed lists replace it:
+  - every T-SQL reserved keyword is denied inside a read, except those a `SELECT` or read-only
+    block uses; `SET` passes only as `SET @var` and `SIGNAL ... SET MESSAGE_TEXT`;
+  - inside a HANA `DO BEGIN ... END` block, each statement must start with an allowed word
+    (`SELECT`, `WITH`, `DECLARE`, assignment, `IF` / `FOR` / `WHILE` / `LOOP`, cursors, `RETURN`,
+    `SIGNAL`, `USING`); any other leader (`LOCK TABLE`, `BACKUP`, ...) is denied. HANA statement
+    verbs are mostly not reserved words, so a keyword list cannot cover them. Outside a block,
+    HANA rejects two statements without `;` as a syntax error (measured on 2.00.089).
+
+  Regression payloads in `tests/guardrails/quotedSpanEvasion.test.ts`. Checked against the
+  existing guardrail suites, the SQL in the in-house query library, and every past `execute_sql`
+  read on the maintainer's machine: no read that passed before is denied now.
+- `hono` 4.13.14 → 4.13.22 (transitive, via the MCP SDK): `npm audit --omit=dev` reports 0
+  again.
+
 ### Changed
 - Docs: README "Separate OS user" and SECURITY state that encryption is not a boundary against
   same-user code (npx included), and that a separate OS user needs a root-owned install and no
@@ -105,7 +126,8 @@ All notable changes to this project are documented here. The format follows
 
 Versions before 1.4.0: see the git history.
 
-[Unreleased]: https://github.com/bersimao/b1-mcp-server/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/bersimao/b1-mcp-server/compare/v1.6.1...HEAD
+[1.6.1]: https://github.com/bersimao/b1-mcp-server/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/bersimao/b1-mcp-server/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/bersimao/b1-mcp-server/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/bersimao/b1-mcp-server/compare/v1.5.0...v1.5.1
