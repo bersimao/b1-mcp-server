@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`creds copy <id>`**: adds a profile pre-filled from an existing one (for example HMG → PRD,
+  changing only `dbName`). Every value, passwords included, becomes the prompt default; the copy
+  happens inside the unlocked vault and passwords are never shown. `slAllowedMethods` and
+  `slWriteApproval` are **not** copied: the new profile falls back to `GET` only with
+  `elicitation` unless you type stronger settings at their prompts.
+
 ## [1.6.1] - 2026-11-25
 
 ### Security
