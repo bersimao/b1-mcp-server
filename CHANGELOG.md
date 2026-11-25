@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-25
+
 ### Added
 - **`creds copy <id>`**: adds a profile pre-filled from an existing one (for example HMG → PRD,
   changing only `dbName`). Every value, passwords included, becomes the prompt default; the copy
@@ -133,7 +135,8 @@ All notable changes to this project are documented here. The format follows
 
 Versions before 1.4.0: see the git history.
 
-[Unreleased]: https://github.com/bersimao/b1-mcp-server/compare/v1.6.1...HEAD
+[Unreleased]: https://github.com/bersimao/b1-mcp-server/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/bersimao/b1-mcp-server/compare/v1.6.1...v1.7.0
 [1.6.1]: https://github.com/bersimao/b1-mcp-server/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/bersimao/b1-mcp-server/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/bersimao/b1-mcp-server/compare/v1.5.1...v1.5.2
