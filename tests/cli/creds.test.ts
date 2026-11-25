@@ -99,6 +99,24 @@ describe('creds CLI', () => {
     expect((await run(p, ['list'], [PASS])).out).toEqual(['(no profiles)']);
   });
 
+  it('copy pre-fills every field from the source, secrets included, under a new id', async () => {
+    const p = paths();
+    await run(p, ['init'], [PASS, PASS]);
+    await run(p, ['add'], [PASS, 'hmg', 'hana', 'h:30015', 'SBO_HMG', 'SYSTEM', 'pw1', 'https://h:50000/b1s/v2', 'manager', 'slpw', '', 'GET,PATCH', 'none']);
+    expect((await run(p, ['copy', 'hmg'], [PASS, 'hmg'])).code).toBe(1); // duplicate id
+    expect((await run(p, ['copy', 'nope'], [PASS])).code).toBe(1);
+    const r = await run(p, ['copy', 'HMG'], [PASS, 'prd', '', '', 'SBO_PRD', '', '', '', '', '', '', '', '']);
+    expect(r.code).toBe(0);
+    expect(r.out.join()).not.toContain('pw1');
+    const m = new ConnectionManager(p.plain);
+    await m.unlock(PASS);
+    expect(m.find('prd')).toMatchObject({ dbType: 'hana', dbServer: 'h:30015', dbName: 'SBO_PRD', dbUser: 'SYSTEM', dbPassword: 'pw1' });
+    // write settings fall back to defaults (GET only, elicitation) instead of inheriting HMG's
+    expect(m.find('prd')?.slAllowedMethods).toEqual(['GET']);
+    expect(m.find('prd')?.slWriteApproval).toBe('elicitation');
+    expect(m.find('hmg')).toMatchObject({ dbName: 'SBO_HMG', slAllowedMethods: ['GET', 'PATCH'], slWriteApproval: 'none' });
+  });
+
   it('refuses to save an invalid profile', async () => {
     const p = paths();
     await run(p, ['init'], [PASS, PASS]);

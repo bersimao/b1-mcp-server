@@ -179,6 +179,7 @@ b1-mcp creds migrate      # encrypt the existing plain-text file (once)
 b1-mcp creds init         # or start an empty encrypted file
 b1-mcp creds add          # add a profile
 b1-mcp creds edit <id>    # Enter keeps a value, "-" clears it
+b1-mcp creds copy <id>    # new profile pre-filled from <id> (e.g. HMG -> PRD); SL write settings reset to defaults
 b1-mcp creds remove <id>
 b1-mcp creds list         # ids and capabilities, never passwords
 b1-mcp creds passwd       # change the passphrase

@@ -7,6 +7,7 @@
 //   b1-mcp creds list          list profiles (never passwords)
 //   b1-mcp creds add           add a profile
 //   b1-mcp creds edit <id>     edit a profile (Enter keeps a value, "-" clears it)
+//   b1-mcp creds copy <id>     add a profile pre-filled from <id> (passwords included, SL write settings reset)
 //   b1-mcp creds remove <id>   remove a profile
 //   b1-mcp creds passwd        change the passphrase
 //   b1-mcp creds unlock        unlock every running server
@@ -268,7 +269,7 @@ function findIndex(profiles: Profile[], id: string | undefined): number {
 // Commands
 // ---------------------------------------------------------------------------
 
-const USAGE = `Usage: b1-mcp creds <init|migrate|list|add|edit <id>|remove <id>|passwd|unlock>`;
+const USAGE = `Usage: b1-mcp creds <init|migrate|list|add|edit <id>|copy <id>|remove <id>|passwd|unlock>`;
 
 export async function runCreds(args: string[], deps: CredsDeps = {}): Promise<number> {
   let io: CredsIo | undefined = deps.io;
@@ -283,7 +284,7 @@ export async function runCreds(args: string[], deps: CredsDeps = {}): Promise<nu
     const plainPath = resolve(deps.plainPath ?? defaultPlainPath());
     const encPath = encryptedPathFor(plainPath);
     const kdf = deps.kdf ?? newKdfParams;
-    const release = ['init', 'migrate', 'add', 'edit', 'remove', 'passwd'].includes(cmd) ? acquireLock(encPath) : undefined;
+    const release = ['init', 'migrate', 'add', 'copy', 'edit', 'remove', 'passwd'].includes(cmd) ? acquireLock(encPath) : undefined;
     try {
 
     switch (cmd) {
@@ -325,15 +326,20 @@ export async function runCreds(args: string[], deps: CredsDeps = {}): Promise<nu
         }
         return 0;
       }
-      case 'add': {
+      case 'add':
+      case 'copy': {
         const v = await openVault(encPath, io);
+        // copy: the source's values (secrets too) become the defaults; they never leave the vault.
+        // Write permissions are NOT copied: an HMG -> PRD copy must not inherit PATCH/POST or "none" approval.
+        const source = cmd === 'copy' ? v.profiles[findIndex(v.profiles, arg)] : undefined;
         const id = (await io.ask('id: ')).trim();
         if (!id) throw new CliError('id is required.');
         if (v.profiles.some(p => String(p.id).toLowerCase() === id.toLowerCase())) throw new CliError(`Profile "${id}" already exists; use "creds edit".`);
-        v.profiles.push({ id, ...(await promptFields(io, undefined)) });
+        const { id: _sourceId, slAllowedMethods: _m, slWriteApproval: _a, ...defaults } = source ?? {};
+        v.profiles.push({ ...(await promptFields(io, source && defaults)), id });
         saveVault(encPath, v);
         v.key.fill(0);
-        io.out(`Added "${id}". Running servers pick it up on the next connect_database.`);
+        io.out(`Added "${id}"${source ? ` from "${source.id}"` : ''}. Running servers pick it up on the next connect_database.`);
         return 0;
       }
       case 'edit': {
